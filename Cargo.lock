@@ -928,6 +928,7 @@ dependencies = [
  "linebender_resource_handle",
  "markup5ever",
  "objc2 0.6.4",
+ "parlance 0.1.0 (git+https://github.com/linebender/parley?rev=400453963ed14bad8034152626fd5c512dd77c0c)",
  "parley",
  "percent-encoding",
  "rayon",
