@@ -22,8 +22,8 @@ use parley::{
 use thread_local::ThreadLocal;
 
 use super::{
-    BoxMeasure, ContentWidths, InlineLayoutEngine, InlineText, LastBaseline, LineFloats,
-    LinesExtent, Placement,
+    BoxMeasure, ContentWidths, FloatSide, InlineLayoutEngine, InlineText, LastBaseline,
+    LineExclusions, LinesExtent, Placement,
 };
 use crate::node::{InlineContent, InlineTextHit, Node};
 
@@ -75,6 +75,9 @@ pub struct TextLayout {
     /// Block-axis offset (in CSS px) of the line boxes from the top of the container's content
     /// box, as applied by `align-content`.
     pub(crate) block_offset: f32,
+    /// The floats, as the lines place them: each one's node, side and margin box's size in device
+    /// pixels.
+    floats: Vec<(u64, FloatSide, f32, f32)>,
 }
 
 impl std::fmt::Debug for TextLayout {
@@ -435,9 +438,9 @@ impl InlineLayoutEngine for TextLayout {
         &mut self,
         width: f32,
         style: Option<&::style::properties::ComputedValues>,
-        floats: &mut impl LineFloats,
+        exclusions: &mut impl LineExclusions,
     ) {
-        self.break_into_lines(width, style, floats);
+        self.break_into_lines(width, style, exclusions);
     }
 
     #[inline]
