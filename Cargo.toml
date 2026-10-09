@@ -107,6 +107,8 @@ taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "ea07c4c304216c9b48
     "calc",
     "detailed_layout_info",
 ] }
+# The font value types shared by the text backends, from Parley's release
+parlance = { version = "0.1.1", default-features = false, features = ["std"] }
 parley = { version = "0.12", default-features = false, features = ["std"] }
 skrifa = { version = "0.44", default-features = false, features = [
     "std",
