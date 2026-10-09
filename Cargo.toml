@@ -108,6 +108,8 @@ taffy = { git = "https://github.com/DioxusLabs/taffy", rev = "2d936b7701f64b0fe9
     "calc",
     "detailed_layout_info",
 ] }
+# The font value types shared by the text backends, from Parley's revision
+parlance = { git = "https://github.com/linebender/parley", rev = "400453963ed14bad8034152626fd5c512dd77c0c", default-features = false, features = ["std"] }
 parley = { git = "https://github.com/linebender/parley", rev = "400453963ed14bad8034152626fd5c512dd77c0c", default-features = false, features = ["std"] }
 skrifa = { version = "0.44", default-features = false, features = [
     "std",

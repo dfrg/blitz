@@ -927,6 +927,7 @@ dependencies = [
  "linebender_resource_handle",
  "markup5ever",
  "objc2 0.6.4",
+ "parlance",
  "parley",
  "percent-encoding",
  "rayon",
