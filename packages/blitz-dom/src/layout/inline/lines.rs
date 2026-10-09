@@ -532,11 +532,7 @@ impl LayoutPassState<'_> {
         layout.padding = padding;
         layout.border = border;
         layout.margin = margin;
-        // The candidates the float holds, from its own corner to this block's.
-        if !output.oof_candidates.is_empty() {
-            output.oof_candidates.translate(layout.location);
-            oof_candidates.append(&mut output.oof_candidates);
-        }
+        let _ = (&mut output, oof_candidates);
     }
 
     /// Hands the inline layout back to its node.
