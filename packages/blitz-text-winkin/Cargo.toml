@@ -1,0 +1,29 @@
+[package]
+name = "blitz-text-winkin"
+description = "The winkin text backend for Blitz"
+documentation = "https://docs.rs/blitz-text-winkin"
+version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# The platform's fonts.
+system = ["fontwich/system", "fontwich/mmap"]
+# ICU's line and word dictionaries.
+dictionaries = ["winkin/dictionaries"]
+# Inline formatting contexts built in parallel, each thread with a context of its own.
+parallel = ["dep:rayon", "dep:thread_local"]
+
+[dependencies]
+blitz-text = { workspace = true }
+winkin = { workspace = true }
+fontwich = { workspace = true }
+skrifa = { workspace = true }
+kurbo = { workspace = true }
+rayon = { workspace = true, optional = true }
+thread_local = { workspace = true, optional = true }

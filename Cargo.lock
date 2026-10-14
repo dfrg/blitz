@@ -906,13 +906,13 @@ dependencies = [
  "bitflags 2.13.2",
  "blitz-text",
  "blitz-text-parley",
+ "blitz-text-winkin",
  "blitz-traits",
  "color",
  "cssparser",
  "cursor-icon",
  "debug_timer 0.1.3",
  "euclid",
- "fontwich",
  "html-escape",
  "icu_casemap",
  "icu_locale_core",
@@ -944,7 +944,6 @@ dependencies = [
  "url",
  "usvg",
  "web-time",
- "winkin",
  "writeable",
  "wuff",
 ]
@@ -1120,6 +1119,19 @@ dependencies = [
  "rayon",
  "skrifa",
  "thread_local",
+]
+
+[[package]]
+name = "blitz-text-winkin"
+version = "0.3.0-beta.4"
+dependencies = [
+ "blitz-text",
+ "fontwich",
+ "kurbo",
+ "rayon",
+ "skrifa",
+ "thread_local",
+ "winkin",
 ]
 
 [[package]]

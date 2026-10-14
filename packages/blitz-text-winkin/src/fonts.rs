@@ -29,12 +29,12 @@ pub struct FontContext {
 }
 
 impl FontContext {
-    /// The platform's fonts, where Blitz is built to read them (`system-fonts`), and no fonts
+    /// The platform's fonts, where the backend is built to read them (`system`), and no fonts
     /// otherwise.
     pub fn new() -> Self {
-        #[cfg(all(feature = "system-fonts", not(target_arch = "wasm32")))]
+        #[cfg(all(feature = "system", not(target_arch = "wasm32")))]
         let collection = Collection::system();
-        #[cfg(not(all(feature = "system-fonts", not(target_arch = "wasm32"))))]
+        #[cfg(not(all(feature = "system", not(target_arch = "wasm32"))))]
         let collection = Collection::new();
         Self::from_collection(collection)
     }
@@ -53,6 +53,7 @@ impl FontContext {
     }
 
     /// The parsed fonts every context made from this one shares.
+    #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
     pub(crate) fn shared_fonts(&self) -> &SharedFonts {
         &self.shared
     }
@@ -114,7 +115,7 @@ impl DocumentText for TextContext {
         Self {
             cx: Context::with_shared_fonts(collection.clone(), given.shared.clone()),
             generation: 0,
-            #[cfg(feature = "parallel-construct")]
+            #[cfg(feature = "parallel")]
             threads: thread_local::ThreadLocal::new(),
             metrics: Arc::new(RwLock::new(collection)),
             given,
