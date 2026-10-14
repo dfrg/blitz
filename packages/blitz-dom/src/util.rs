@@ -1,7 +1,6 @@
 use crate::node::{Node, NodeData};
 use color::{AlphaColor, Srgb};
 use keyboard_types::Modifiers;
-use std::borrow::Cow;
 use style::color::AbsoluteColor;
 
 #[cfg(target_os = "macos")]
@@ -12,32 +11,7 @@ pub(crate) const ACTION_MOD: Modifiers = Modifiers::CONTROL;
 pub type Color = AlphaColor<Srgb>;
 
 /// Decode raw font bytes, decompressing WOFF/WOFF2 if the `woff` feature is enabled.
-/// Returns the original slice unchanged for TTF/OTF input, and also on decompression
-/// failure. With the `woff` feature disabled, all input passes through unchanged.
-pub fn decode_font_bytes(bytes: &[u8]) -> Cow<'_, [u8]> {
-    if bytes.len() < 4 {
-        return Cow::Borrowed(bytes);
-    }
-    match &bytes[0..4] {
-        #[cfg(feature = "woff")]
-        b"wOFF" => wuff::decompress_woff1(bytes)
-            .map(Cow::Owned)
-            .unwrap_or_else(|_| {
-                #[cfg(feature = "tracing")]
-                tracing::warn!("Failed to decompress woff1 font");
-                Cow::Borrowed(bytes)
-            }),
-        #[cfg(feature = "woff")]
-        b"wOF2" => wuff::decompress_woff2(bytes)
-            .map(Cow::Owned)
-            .unwrap_or_else(|_| {
-                #[cfg(feature = "tracing")]
-                tracing::warn!("Failed to decompress woff2 font");
-                Cow::Borrowed(bytes)
-            }),
-        _ => Cow::Borrowed(bytes),
-    }
-}
+pub use blitz_text::decode_font_bytes;
 
 #[cfg(feature = "svg")]
 use std::sync::{Arc, LazyLock};

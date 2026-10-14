@@ -904,6 +904,7 @@ dependencies = [
  "app_units",
  "atomic_refcell",
  "bitflags 2.13.2",
+ "blitz-text",
  "blitz-traits",
  "color",
  "cssparser",
@@ -1093,6 +1094,20 @@ dependencies = [
  "taffy",
  "test-that",
  "usvg",
+]
+
+[[package]]
+name = "blitz-text"
+version = "0.3.0-beta.3"
+dependencies = [
+ "bytes",
+ "color",
+ "kurbo",
+ "linebender_resource_handle",
+ "parlance",
+ "skrifa",
+ "tracing",
+ "wuff",
 ]
 
 [[package]]

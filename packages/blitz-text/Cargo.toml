@@ -1,0 +1,30 @@
+[package]
+name = "blitz-text"
+description = "The text layout interface Blitz lays out, edits and paints text through"
+documentation = "https://docs.rs/blitz-text"
+version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# WOFF and WOFF2 decoding of the fonts a host hands a backend.
+woff = ["dep:wuff"]
+tracing = ["dep:tracing"]
+
+[dependencies]
+# The font value types the text engines share
+parlance = { workspace = true }
+# Geometry and colors
+kurbo = { workspace = true }
+color = { workspace = true }
+# Font data as renderers take it, and the font tables decorations are placed from
+linebender_resource_handle = { workspace = true }
+skrifa = { workspace = true }
+bytes = { workspace = true }
+wuff = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
