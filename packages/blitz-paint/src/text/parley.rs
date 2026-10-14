@@ -204,7 +204,7 @@ pub(crate) fn paint_marker(
     };
     // Outside markers are placed outside the list item's border box
     // (`pos` is the origin of its content box)
-    let x_offset = -(layout.full_width() / layout.scale()
+    let x_offset = -(layout.layout.full_width() / layout.layout.scale()
         + x_padding
         + item_layout.padding.left
         + item_layout.border.left);
@@ -212,9 +212,9 @@ pub(crate) fn paint_marker(
     // Align the marker with the baseline of the first line of text in the list item
     let y_offset = text_layout
         .and_then(|text_layout| text_layout.first_baseline())
-        .zip(layout.lines().next())
+        .zip(layout.layout.lines().next())
         .map_or(0.0, |(baseline, marker_line)| {
-            baseline - marker_line.metrics().baseline / layout.scale()
+            baseline - marker_line.metrics().baseline / layout.layout.scale()
         });
 
     let pos = Point {
@@ -226,7 +226,7 @@ pub(crate) fn paint_marker(
 
     stroke_text(
         scene,
-        layout.lines(),
+        layout.layout.lines(),
         doc,
         transform,
         scale,
@@ -262,7 +262,7 @@ fn draw_inline_backgrounds<'a>(
                 continue;
             };
 
-            let node_id = glyph_run.style().brush.id;
+            let node_id = NodeId::from_u64(glyph_run.style().brush.key.0);
             if node_id == inline_root_id {
                 continue;
             }
@@ -349,7 +349,7 @@ fn stroke_text<'a>(
                 // (inline root -> run node), keep the shared prefix already on the stack,
                 // pop the rest, and resolve styles only for the newly-descended nodes.
                 path_scratch.clear();
-                let mut walk_id = Some(style.brush.id);
+                let mut walk_id = Some(NodeId::from_u64(style.brush.key.0));
                 while let Some(node_id) = walk_id {
                     path_scratch.push(node_id);
                     if node_id == inline_root_id {
@@ -415,7 +415,7 @@ fn stroke_text<'a>(
                     css_font_size,
                     centered: false,
                 };
-                let run_node_id = style.brush.id;
+                let run_node_id = NodeId::from_u64(style.brush.key.0);
                 let run_x0 = glyph_run.offset() as f64;
                 let run_x1 = run_x0 + glyph_run.advance() as f64;
 

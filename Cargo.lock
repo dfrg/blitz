@@ -905,6 +905,7 @@ dependencies = [
  "atomic_refcell",
  "bitflags 2.13.2",
  "blitz-text",
+ "blitz-text-parley",
  "blitz-traits",
  "color",
  "cssparser",
@@ -924,7 +925,6 @@ dependencies = [
  "markup5ever",
  "objc2 0.6.5",
  "parlance",
- "parley",
  "percent-encoding",
  "rayon",
  "selectors",
@@ -1108,6 +1108,18 @@ dependencies = [
  "skrifa",
  "tracing",
  "wuff",
+]
+
+[[package]]
+name = "blitz-text-parley"
+version = "0.3.0-beta.4"
+dependencies = [
+ "blitz-text",
+ "kurbo",
+ "parley",
+ "rayon",
+ "skrifa",
+ "thread_local",
 ]
 
 [[package]]
