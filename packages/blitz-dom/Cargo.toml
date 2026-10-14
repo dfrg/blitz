@@ -78,8 +78,6 @@ anyrender = { workspace = true, optional = true }
 
 # Linebender/Fontations dependencies
 accesskit = { workspace = true, optional = true }
-parlance = { workspace = true }
-skrifa = { workspace = true }
 linebender_resource_handle = { workspace = true }
 color = { workspace = true }
 kurbo = { workspace = true }
@@ -95,7 +93,6 @@ writeable = { workspace = true, optional = true }
 slotmap = { workspace = true }
 bitflags = { workspace = true }
 tracing = { workspace = true, optional = true }
-rayon = { workspace = true }
 
 # Media & Decoding
 image = { workspace = true }
@@ -111,7 +108,6 @@ url = { workspace = true }
 # Input
 keyboard-types = { workspace = true }
 cursor-icon = { workspace = true }
-thread_local = { workspace = true }
 
 # WASM
 web-time = { workspace = true }

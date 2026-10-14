@@ -732,7 +732,7 @@ pub fn build_single_font_ctx(font_data: &[u8]) -> FontContext {
 mod tests {
     use style::stylesheets::{CssRule, Origin, StylesheetInDocument as _};
 
-    use parlance::{FontStyle, FontWeight};
+    use super::parlance::{FontStyle, FontWeight};
 
     use super::{BACKEND, FaceDescriptors, TextBackend, face_descriptors};
     use crate::{BaseDocument, DocumentConfig};
@@ -872,7 +872,3 @@ mod font_face_override_tests {
         );
     }
 }
-
-#[doc(hidden)]
-pub static PERF_COUNTS: [core::sync::atomic::AtomicUsize; 2] =
-    [const { core::sync::atomic::AtomicUsize::new(0) }; 2];

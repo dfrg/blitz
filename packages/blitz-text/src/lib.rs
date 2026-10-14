@@ -69,8 +69,8 @@ pub use fonts::{
 pub use key::NodeKey;
 pub use layout::{
     BoxMeasure, ContentItem, ContentWidths, FloatRequest, InlineLayout, InlineText, LastBaseline,
-    LineArea, LineExclusions, LineFlow, LinesExtent, LinesInputs, Measure, PlacedFloat, Placement,
-    Size, TextHit,
+    LineArea, LineExclusions, LineFlow, LinesExtent, LinesInputs, Measure, NoExclusions,
+    PlacedFloat, Placement, Size, TextHit,
 };
 pub use paint::{PaintFrame, PaintHost, PaintScratch, TextSink};
 pub use style::{OwnedTextStyle, TextStyle};
