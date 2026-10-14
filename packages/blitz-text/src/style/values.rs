@@ -37,7 +37,10 @@ impl LengthPercentage {
     pub fn resolve(self, basis: f32) -> f32 {
         match self {
             Self::Length(px) => px,
-            Self::Percentage(fraction) => basis * fraction,
+            Self::Percentage(fraction) => {
+                let value = basis * fraction;
+                if value.is_nan() { 0.0 } else { value }
+            }
             Self::Calc { px, fraction } => px + basis * fraction,
         }
     }
@@ -505,13 +508,13 @@ impl Default for TabSize {
 }
 
 flags! {
-    /// A computed `text-autospace`.
+    /// A computed `text-autospace`: `no-autospace` is the empty set.
     TextAutospace: u8 {
         NORMAL = 1 << 0;
         AUTO = 1 << 1;
-        NO_AUTOSPACE = 1 << 2;
-        IDEOGRAPH_ALPHA = 1 << 3;
-        IDEOGRAPH_NUMERIC = 1 << 4;
+        IDEOGRAPH_ALPHA = 1 << 2;
+        IDEOGRAPH_NUMERIC = 1 << 3;
+        PUNCTUATION = 1 << 4;
         INSERT = 1 << 5;
         REPLACE = 1 << 6;
     }
