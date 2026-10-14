@@ -1,5 +1,6 @@
 //! Editing the text of a form control, and laying out list markers.
 
+use core::cell::RefCell;
 use std::borrow::Cow;
 use std::ops::Range;
 
@@ -7,7 +8,8 @@ use kurbo::{Affine, Point, Rect, Size};
 
 use crate::NodeKey;
 use crate::build::Marker;
-use crate::style::TextStyle;
+use crate::paint::{PaintHost, PaintScratch, TextSink};
+use crate::style::{Color, TextStyle};
 
 /// The size and scale of the laid-out text of an `<input>` or `<textarea>`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,6 +92,22 @@ pub trait EditEngine<S: TextStyle>: EditableText + Sized {
 
     /// Applies `edit`, leaving the text laid out.
     fn edit(&mut self, cx: &mut Self::Context, edit: Edit<'_>);
+
+    /// Paints the text into `sink`, and its selection and caret where `focussed`, the caret in
+    /// `caret_color`. `transform` takes the text's device pixels onto the scene, `scale` is
+    /// device pixels per CSS pixel, and `key` is the control's node.
+    #[allow(clippy::too_many_arguments)]
+    fn paint<K: TextSink, H: PaintHost<S>>(
+        &self,
+        sink: &mut K,
+        host: &H,
+        scratch: &RefCell<PaintScratch>,
+        focussed: bool,
+        caret_color: Color,
+        transform: Affine,
+        scale: f64,
+        key: NodeKey,
+    );
 }
 
 /// Where an outside list marker is painted from: its list item's geometry.
@@ -97,8 +115,10 @@ pub trait EditEngine<S: TextStyle>: EditableText + Sized {
 pub struct MarkerFrame {
     /// The item's content box origin, in CSS pixels.
     pub origin: Point,
-    /// The item's left padding and border, in CSS pixels, which the marker is placed beyond.
-    pub inset_left: f32,
+    /// The item's left padding, in CSS pixels, which the marker is placed beyond.
+    pub padding_left: f32,
+    /// The item's left border, in CSS pixels, which the marker is placed beyond.
+    pub border_left: f32,
     /// Takes the element's CSS pixels, scaled to device pixels, onto the scene.
     pub transform: Affine,
     /// Device pixels per CSS pixel.
@@ -125,6 +145,18 @@ pub trait MarkerEngine<S: TextStyle>: Sized {
         bullet: bool,
         scale: f32,
     ) -> Self;
+
+    /// Paints the marker into `sink`, right-aligned before the list item's border box, on the
+    /// baseline of the first line of `lines`, the item's own content.
+    fn paint<K: TextSink, H: PaintHost<S>>(
+        &self,
+        sink: &mut K,
+        host: &H,
+        scratch: &RefCell<PaintScratch>,
+        marker: &Marker,
+        lines: Option<&Self::Lines>,
+        frame: &MarkerFrame,
+    );
 }
 
 /// A change to the text or the selection of an `<input>` or `<textarea>`.

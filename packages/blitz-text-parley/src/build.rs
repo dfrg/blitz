@@ -3,7 +3,8 @@
 
 use blitz_text::style::Clear;
 use blitz_text::{
-    FloatSide, InlineBuilder, InlineSource, Marker, MarkerEngine, NodeKey, SpanKind, TextStyle,
+    FloatSide, InlineBuilder, InlineSource, Marker, MarkerEngine, MarkerFrame, NodeKey, PaintHost,
+    PaintScratch, SpanKind, TextSink, TextStyle,
 };
 use parley::{
     FontContext, FontFamily, InlineBox, LayoutContext, StyleProperty, TreeBuilder,
@@ -196,5 +197,17 @@ impl<S: TextStyle> MarkerEngine<S> for MarkerLayout {
         let width = layout.calculate_content_widths().max;
         layout.break_all_lines(Some(width));
         Self { layout }
+    }
+
+    fn paint<K: TextSink, H: PaintHost<S>>(
+        &self,
+        sink: &mut K,
+        host: &H,
+        scratch: &std::cell::RefCell<PaintScratch>,
+        marker: &Marker,
+        lines: Option<&TextLayout>,
+        frame: &MarkerFrame,
+    ) {
+        crate::paint::paint_marker(sink, marker, self, lines, host, scratch, frame);
     }
 }

@@ -3,8 +3,12 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use blitz_text::{Edit, EditEngine, EditableText, EditorMetrics, Motion, NodeKey, TextStyle};
-use kurbo::{Rect, Size};
+use blitz_text::style::Color;
+use blitz_text::{
+    Edit, EditEngine, EditableText, EditorMetrics, Motion, NodeKey, PaintHost, PaintScratch,
+    TextSink, TextStyle,
+};
+use kurbo::{Affine, Rect, Size};
 use parley::{PlainEditor, PlainEditorDriver, StyleProperty};
 
 use crate::{TextBrush, TextContext, style as css_to_parley};
@@ -194,6 +198,30 @@ impl<S: TextStyle> EditEngine<S> for TextEditor {
             Edit::SelectHardLineAtPoint(x, y) => driver.select_hard_line_at_point(x, y),
         }
         driver.refresh_layout();
+    }
+
+    fn paint<K: TextSink, H: PaintHost<S>>(
+        &self,
+        sink: &mut K,
+        host: &H,
+        scratch: &std::cell::RefCell<PaintScratch>,
+        focussed: bool,
+        caret_color: Color,
+        transform: Affine,
+        scale: f64,
+        key: NodeKey,
+    ) {
+        crate::paint::paint_text_input(
+            sink,
+            self,
+            host,
+            scratch,
+            focussed,
+            caret_color,
+            transform,
+            scale,
+            key,
+        );
     }
 }
 

@@ -8,14 +8,15 @@
 
 mod editor;
 mod fonts;
+mod paint;
 mod style;
 
 use blitz_text::style::{Clear, TextStyle};
 use blitz_text::{
     BlockInputs, ContentItem, ContentWidths, FloatRequest, FontFeatureValues, InlineBuilder,
     InlineLayout, InlineSource, InlineText, LastBaseline, LineArea, LineExclusions, LineFlow,
-    LinesExtent, LinesInputs, Marker, MarkerEngine, Measure, PaintHost, Placement, SpanKind,
-    TextHit,
+    LinesExtent, LinesInputs, Marker, MarkerEngine, MarkerFrame, Measure, PaintFrame, PaintHost,
+    PaintScratch, Placement, SpanKind, TextHit, TextSink,
 };
 use fontwich::{Collection, LayerBuilder};
 use kurbo::Affine;
@@ -1526,6 +1527,15 @@ impl<S: TextStyle> InlineLayout<S> for TextLayout<S> {
         // The block's initial letter and its inside marker have no node.
         (key & (FIRST_LETTER_KEY | MARKER_KEY) == 0).then_some(blitz_text::NodeKey(key))
     }
+    fn paint<K: TextSink, H: PaintHost<S>>(
+        &self,
+        sink: &mut K,
+        host: &H,
+        scratch: &std::cell::RefCell<PaintScratch>,
+        frame: &PaintFrame,
+    ) {
+        paint::paint_inline_layout(sink, self, host, scratch, frame);
+    }
 }
 
 impl<S: TextStyle> TextLayout<S> {
@@ -1835,5 +1845,16 @@ impl<S: TextStyle> MarkerEngine<S> for TextLayout<S> {
             &mut winkin::NoExclusions,
         );
         text
+    }
+    fn paint<K: TextSink, H: PaintHost<S>>(
+        &self,
+        sink: &mut K,
+        host: &H,
+        scratch: &std::cell::RefCell<PaintScratch>,
+        marker: &Marker,
+        lines: Option<&TextLayout<S>>,
+        frame: &MarkerFrame,
+    ) {
+        paint::paint_marker(sink, marker, self, lines, host, scratch, frame);
     }
 }
