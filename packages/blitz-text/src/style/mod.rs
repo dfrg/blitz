@@ -23,8 +23,9 @@ pub use parlance::{
 /// are equal, never `true` for styles whose values differ.
 ///
 /// Backends are generic over the style, and keep a clone where they read it after the call
-/// they were handed it in, so a clone is meant to be cheap.
-pub trait TextStyle: Clone {
+/// they were handed it in, so a clone is meant to be cheap. Styles are shared between the threads
+/// that build inline formatting contexts in parallel.
+pub trait TextStyle: Clone + Send + Sync {
     // Font
 
     /// Returns the families of `font-family`, in order.

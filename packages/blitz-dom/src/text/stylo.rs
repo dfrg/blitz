@@ -253,7 +253,7 @@ fn alternate_names(
     }
 }
 
-impl<P: Deref<Target = ComputedValues> + Clone> TextStyle for StyloStyle<P> {
+impl<P: Deref<Target = ComputedValues> + Clone + Send + Sync> TextStyle for StyloStyle<P> {
     // Font
 
     #[inline]

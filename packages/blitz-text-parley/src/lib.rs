@@ -1,67 +1,79 @@
-//! The Parley text backend.
+//! The Parley text backend for Blitz: inline formatting contexts, form controls and list
+//! markers laid out by [Parley](https://github.com/linebender/parley), behind
+//! [`blitz_text`]'s traits.
 
 mod build;
 mod editor;
 mod fonts;
 mod layout;
-pub(crate) mod style;
+mod style;
 
-#[cfg(feature = "parallel-construct")]
+#[cfg(feature = "parallel")]
 use std::cell::RefCell;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
-use std::ops::Range;
-
-use blitz_traits::node_id::NodeId;
-use kurbo::Rect;
+use blitz_text::{
+    Backend, ContentItem, ContentWidths, FloatSide, InlineLayout, InlineSource, InlineText,
+    LastBaseline, LineArea, LineExclusions, LineFlow, LinesExtent, LinesInputs, NodeKey, Placement,
+    TextHit, TextStyle,
+};
+use kurbo::{Rect, Vec2};
 use parley::{
     Affinity, BreakReason, Cluster, ClusterSide, Cursor, LayoutContext, PositionedLayoutItem, Run,
     Selection,
 };
-#[cfg(feature = "parallel-construct")]
+#[cfg(feature = "parallel")]
 use thread_local::ThreadLocal;
 
-use super::{
-    ContentWidths, FloatSide, InlineLayoutEngine, InlineText, LastBaseline, LineArea,
-    LineExclusions, LineFlow, LinesExtent, LinesInputs, Placement,
-};
-use crate::node::{InlineContent, InlineTextHit, Node};
-
-/// The Parley crate, for the renderer's Parley painter.
 pub use ::parley;
-pub use ::parley::FontContext;
 pub use editor::TextEditor;
+pub use fonts::FontContext;
 
-/// Parley Brush type for Blitz which contains the Blitz node id
+/// The Parley backend.
+pub struct Parley;
+
+impl<S: TextStyle + 'static> Backend<S> for Parley {
+    const NAME: &'static str = "parley";
+    type Fonts = FontContext;
+    type Context = TextContext;
+    type Layout = TextLayout;
+    type Editor = TextEditor;
+    type Marker = MarkerLayout;
+}
+
+/// What a run of text carries through Parley: the node its text is in.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TextBrush {
-    /// The node id for the span
-    pub id: NodeId,
+    /// The node of the run's innermost element, or of the inline root.
+    pub key: NodeKey,
 }
 
 impl TextBrush {
-    pub(crate) fn from_id(id: NodeId) -> Self {
-        Self { id }
+    pub(crate) fn from_key(key: NodeKey) -> Self {
+        Self { key }
     }
 }
 
 /// An outside list marker, laid out by Parley.
-pub type MarkerLayout = parley::Layout<TextBrush>;
-
-/// What a document keeps for its text under Parley.
-pub struct TextContext {
-    /// A Parley font context
-    pub(crate) font_ctx: Arc<Mutex<FontContext>>,
-    #[cfg(feature = "parallel-construct")]
-    /// Thread-and-document-local copies to the font context
-    pub(crate) thread_font_contexts: ThreadLocal<RefCell<Box<FontContext>>>,
-    /// A Parley layout context
-    pub(crate) layout_ctx: LayoutContext<TextBrush>,
+#[derive(Clone)]
+pub struct MarkerLayout {
+    /// The marker's layout, which the renderer paints.
+    pub layout: parley::Layout<TextBrush>,
 }
 
-// FIXME: static thread_local FontCtx isn't necessarily correct in multi-document context.
-// Should use thread_local crate with ThreadLocal value store in the Document.
-#[cfg(feature = "parallel-construct")]
+/// What a document keeps for its text under Parley: its fonts, and Parley's contexts.
+pub struct TextContext {
+    /// The fonts.
+    pub font_ctx: Arc<Mutex<parley::FontContext>>,
+    /// Each construction thread's copy of the fonts.
+    #[cfg(feature = "parallel")]
+    pub(crate) thread_font_contexts: ThreadLocal<RefCell<Box<parley::FontContext>>>,
+    /// Parley's layout context.
+    pub layout_ctx: LayoutContext<TextBrush>,
+}
+
+#[cfg(feature = "parallel")]
 thread_local! {
     static LAYOUT_CTX: RefCell<Option<Box<LayoutContext<TextBrush>>>> = const { RefCell::new(None) };
 }
@@ -72,14 +84,9 @@ pub struct TextLayout {
     pub(crate) text: String,
     /// Parley's layout of the text and inline boxes, which the renderer paints.
     pub layout: parley::Layout<TextBrush>,
-    /// Block-axis offset (in CSS px) of the line boxes from the top of the container's content
-    /// box, as applied by `align-content`.
+    /// How far `align-content` moves the line boxes down the content box, in CSS pixels.
     pub(crate) block_offset: f32,
-    /// The out-of-flow positions for which some inline span with an inline box below it is a
-    /// containing block (as `SPAN_*_CB` flags). The inline root claims those boxes in its place.
-    /// Set by each `RunMode::PerformLayout` run of inline layout.
-    pub(crate) span_cb_flags: stylo_taffy::StyleFlags,
-    /// The floats, as the lines place them: each one's node, side and margin box's size in device
+    /// The floats, as the lines place them: each one's key, side and margin box's size in device
     /// pixels.
     floats: Vec<(u64, FloatSide, f32, f32)>,
 }
@@ -116,7 +123,7 @@ impl InlineText for TextLayout {
         self.text.get(start..end).into_iter()
     }
 
-    fn logical_content(&self) -> impl Iterator<Item = InlineContent> {
+    fn logical_content(&self) -> impl Iterator<Item = ContentItem> {
         let mut lines = self.layout.lines();
         let mut boxes = self.layout.inline_boxes().peekable();
         // The current line's runs, sorted from visual into logical order for bidi text
@@ -126,13 +133,13 @@ impl InlineText for TextLayout {
         // The node of the last cluster's style, which the clusters after it mostly share
         let mut style = None;
         // A cluster read but not yet taken in, which waits for the items before it
-        let mut held: Option<(NodeId, Range<usize>)> = None;
+        let mut held: Option<(NodeKey, Range<usize>)> = None;
         // The text taken in since the last item, all of one node
-        let mut pending: Option<(NodeId, Range<usize>)> = None;
-        let text = |(node_id, range)| InlineContent::Text { node_id, range };
+        let mut pending: Option<(NodeKey, Range<usize>)> = None;
+        let text = |(key, range)| ContentItem::Text { key, range };
         std::iter::from_fn(move || {
             loop {
-                let (node_id, range) = match held.take() {
+                let (key, range) = match held.take() {
                     Some(cluster) => cluster,
                     None => {
                         let Some(cluster) = clusters.as_mut().and_then(Iterator::next) else {
@@ -143,7 +150,7 @@ impl InlineText for TextLayout {
                                         return Some(text(read));
                                     }
                                     let ibox = boxes.next()?;
-                                    return Some(InlineContent::Box(NodeId::from_u64(ibox.id)));
+                                    return Some(ContentItem::Box(NodeKey(ibox.id)));
                                 };
                                 runs.clear();
                                 runs.extend(line.runs());
@@ -155,34 +162,34 @@ impl InlineText for TextLayout {
                             continue;
                         };
                         let index = cluster.style_index();
-                        let node_id = match style {
-                            Some((styled, node_id)) if styled == index => node_id,
+                        let key = match style {
+                            Some((styled, key)) if styled == index => key,
                             _ => {
-                                let node_id = cluster.style().brush.id;
-                                style = Some((index, node_id));
-                                node_id
+                                let key = cluster.style().brush.key;
+                                style = Some((index, key));
+                                key
                             }
                         };
-                        (node_id, cluster.text_range())
+                        (key, cluster.text_range())
                     }
                 };
                 // The boxes before the cluster come first, after the text read before them
                 if boxes.peek().is_some_and(|ibox| ibox.index <= range.start) {
-                    held = Some((node_id, range));
+                    held = Some((key, range));
                     if let Some(read) = pending.take() {
                         return Some(text(read));
                     }
                     if let Some(ibox) = boxes.next() {
-                        return Some(InlineContent::Box(NodeId::from_u64(ibox.id)));
+                        return Some(ContentItem::Box(NodeKey(ibox.id)));
                     }
                     continue;
                 }
                 match &mut pending {
-                    Some((read_id, read)) if *read_id == node_id && read.end == range.start => {
+                    Some((read_key, read)) if *read_key == key && read.end == range.start => {
                         read.end = range.end;
                     }
                     _ => {
-                        if let Some(read) = pending.replace((node_id, range)) {
+                        if let Some(read) = pending.replace((key, range)) {
                             return Some(text(read));
                         }
                     }
@@ -192,8 +199,8 @@ impl InlineText for TextLayout {
     }
 
     #[inline]
-    fn source_offset(&self, node_id: NodeId, offset: usize) -> Option<usize> {
-        let _ = (node_id, offset);
+    fn source_offset(&self, key: NodeKey, offset: usize) -> Option<usize> {
+        let _ = (key, offset);
         None
     }
 
@@ -207,7 +214,7 @@ impl InlineText for TextLayout {
         Some(line.metrics().baseline / self.layout.scale() + self.block_offset)
     }
 
-    fn hit_test(&self, x: f32, y: f32, exact: bool) -> Option<InlineTextHit> {
+    fn hit_test(&self, x: f32, y: f32, exact: bool) -> Option<TextHit> {
         let layout = &self.layout;
         let point = (x * layout.scale(), (y - self.block_offset) * layout.scale());
         let (cluster, side) = if exact {
@@ -216,7 +223,7 @@ impl InlineText for TextLayout {
             Cluster::from_point(layout, point.0, point.1)?
         };
         let leading = side == ClusterSide::Left;
-        let byte_offset = if cluster.is_rtl() {
+        let offset = if cluster.is_rtl() {
             if leading {
                 cluster.text_range().end
             } else {
@@ -227,9 +234,9 @@ impl InlineText for TextLayout {
         } else {
             cluster.text_range().end
         };
-        Some(InlineTextHit {
-            node_id: cluster.style().brush.id,
-            byte_offset,
+        Some(TextHit {
+            key: cluster.style().brush.key,
+            offset,
         })
     }
 
@@ -243,74 +250,49 @@ impl InlineText for TextLayout {
         });
     }
 
-    fn fragment_rects(&self, root: &Node, node: &Node) -> impl Iterator<Item = taffy::Rect<f32>> {
+    fn fragment_rects(
+        &self,
+        _key: NodeKey,
+        origin: (f32, f32),
+        _content: kurbo::Size,
+        _shift: Vec2,
+        contains: impl Fn(NodeKey) -> bool,
+    ) -> impl Iterator<Item = Rect> {
         let layout = &self.layout;
         let scale = layout.scale();
+        let origin_x = origin.0;
+        let origin_y = origin.1 + self.block_offset;
 
-        // Walk up the DOM parent chain from `id` to check whether it is (or is
-        // inside) the target node, stopping at the inline root.
-        let root_id = root.id;
-        let is_in_target = move |mut id: NodeId| -> bool {
-            loop {
-                if id == node.id {
-                    return true;
-                }
-                if id == root_id {
-                    return false;
-                }
-                match node.with(id).parent {
-                    Some(parent) => id = parent,
-                    None => return false,
-                }
-            }
-        };
-
-        let root_layout = root.unrounded_layout();
-        let content_box_inset = root_layout.padding + root_layout.border;
-        let origin_x = content_box_inset.left;
-        let origin_y = content_box_inset.top + self.block_offset;
-
-        fn union(acc: &mut Option<taffy::Rect<f32>>, left: f32, top: f32, right: f32, bottom: f32) {
+        fn union(acc: &mut Option<[f32; 4]>, left: f32, top: f32, right: f32, bottom: f32) {
             *acc = Some(match *acc {
-                Some(rect) => taffy::Rect {
-                    left: rect.left.min(left),
-                    top: rect.top.min(top),
-                    right: rect.right.max(right),
-                    bottom: rect.bottom.max(bottom),
-                },
-                None => taffy::Rect {
-                    left,
-                    top,
-                    right,
-                    bottom,
-                },
+                Some([l, t, r, b]) => [l.min(left), t.min(top), r.max(right), b.max(bottom)],
+                None => [left, top, right, bottom],
             });
         }
 
-        // One rect per line box: the union of all of the target's fragments on that line
+        // One rect a line box: the union of the node's fragments on that line
         layout.lines().filter_map(move |line| {
             let line_metrics = line.metrics();
-            let mut line_rect: Option<taffy::Rect<f32>> = None;
+            let mut line_rect: Option<[f32; 4]> = None;
 
             for item in line.items() {
                 match item {
                     PositionedLayoutItem::GlyphRun(glyph_run) => {
-                        if !is_in_target(glyph_run.style().brush.id) {
+                        if !contains(glyph_run.style().brush.key) {
                             continue;
                         }
                         let x0 = glyph_run.offset();
                         let x1 = x0 + glyph_run.advance();
-                        // Use the line box's block extent rather than the
-                        // run's font ascent/descent: fonts with small
-                        // typographic metrics would otherwise produce rects
-                        // that clip the rendered glyphs. This matches the
-                        // geometry used for text selection highlights.
+                        // The line box's block extent rather than the run's font ascent and
+                        // descent: fonts with small typographic metrics would otherwise give
+                        // rects that clip the drawn glyphs. This matches the geometry of the
+                        // selection highlight.
                         let y0 = line_metrics.block_min_coord;
                         let y1 = line_metrics.block_max_coord;
                         union(&mut line_rect, x0, y0, x1, y1);
                     }
                     PositionedLayoutItem::InlineBox(inline_box) => {
-                        if !is_in_target(NodeId::from_u64(inline_box.id)) {
+                        if !contains(NodeKey(inline_box.id)) {
                             continue;
                         }
                         let x0 = inline_box.x;
@@ -326,11 +308,13 @@ impl InlineText for TextLayout {
                 }
             }
 
-            line_rect.map(|rect| taffy::Rect {
-                left: origin_x + rect.left / scale,
-                top: origin_y + rect.top / scale,
-                right: origin_x + rect.right / scale,
-                bottom: origin_y + rect.bottom / scale,
+            line_rect.map(|[left, top, right, bottom]| {
+                Rect::new(
+                    f64::from(origin_x + left / scale),
+                    f64::from(origin_y + top / scale),
+                    f64::from(origin_x + right / scale),
+                    f64::from(origin_y + bottom / scale),
+                )
             })
         })
     }
@@ -377,22 +361,24 @@ impl InlineText for TextLayout {
     }
 }
 
-impl InlineLayoutEngine for TextLayout {
+impl<S: TextStyle> InlineLayout<S> for TextLayout {
+    type Context = TextContext;
+
     const SETS_WRITING_MODES: bool = false;
     const READS_ROOM_ABOVE: bool = false;
+    const SHIFTS_RELATIVE_INLINES: bool = false;
 
-    fn build_layouts(
+    fn build_layouts<C: InlineSource<S>>(
         cx: &mut TextContext,
-        nodes: &crate::NodeTree,
-        _cascade: crate::text::DocumentCascade<'_>,
+        source: &C,
         scale: f32,
-        layouts: &mut [(NodeId, Box<Self>)],
+        layouts: &mut [(NodeKey, Box<Self>)],
     ) {
-        #[cfg(feature = "parallel-construct")]
+        #[cfg(feature = "parallel")]
         {
             use rayon::prelude::*;
             let cx = &*cx;
-            layouts.par_iter_mut().for_each(|(node_id, layout)| {
+            layouts.par_iter_mut().for_each(|(key, layout)| {
                 let mut layout_ctx = LAYOUT_CTX
                     .take()
                     .unwrap_or_else(|| Box::new(LayoutContext::new()));
@@ -401,25 +387,25 @@ impl InlineLayoutEngine for TextLayout {
                     .get_or(|| RefCell::new(Box::new(cx.font_ctx.lock().unwrap().clone())))
                     .borrow_mut();
                 build::build_inline_layout_into(
-                    nodes,
+                    source,
                     &mut layout_ctx,
                     &mut font_ctx,
                     layout,
                     scale,
-                    *node_id,
+                    *key,
                 );
                 LAYOUT_CTX.set(Some(layout_ctx));
             });
         }
-        #[cfg(not(feature = "parallel-construct"))]
-        for (node_id, layout) in layouts {
+        #[cfg(not(feature = "parallel"))]
+        for (key, layout) in layouts {
             build::build_inline_layout_into(
-                nodes,
+                source,
                 &mut cx.layout_ctx,
                 &mut cx.font_ctx.lock().unwrap(),
                 layout,
                 scale,
-                *node_id,
+                *key,
             );
         }
     }
@@ -429,9 +415,16 @@ impl InlineLayoutEngine for TextLayout {
         self.holds_nothing()
     }
 
-    fn prepare(&mut self, doc: &mut crate::BaseDocument, root: NodeId, lines: LinesInputs<'_>) {
-        let style = doc.nodes[root].primary_styles();
-        self.prepare_lines(lines.sizes, style.as_deref().map(|style| &**style));
+    fn prepare<C: InlineSource<S>>(
+        &mut self,
+        _cx: &mut TextContext,
+        source: &C,
+        root: NodeKey,
+        _scale: f32,
+        lines: LinesInputs<'_>,
+    ) {
+        let style = source.style(root);
+        self.prepare_lines(lines.sizes, style.as_ref());
     }
 
     #[inline]
@@ -443,7 +436,7 @@ impl InlineLayoutEngine for TextLayout {
         &mut self,
         _cx: &mut TextContext,
         area: LineArea,
-        style: Option<&::style::properties::ComputedValues>,
+        style: Option<&S>,
         exclusions: &mut impl LineExclusions,
     ) {
         self.break_into_lines(area.width, style, exclusions);
@@ -455,7 +448,7 @@ impl InlineLayoutEngine for TextLayout {
     }
 
     #[inline]
-    fn set_frame(&mut self, block_offset: f32, _content: taffy::Size<f32>) {
+    fn set_frame(&mut self, block_offset: f32, _content: blitz_text::Size) {
         self.block_offset = block_offset;
     }
 
@@ -486,17 +479,7 @@ impl InlineLayoutEngine for TextLayout {
     }
 
     #[inline]
-    fn float_node(key: u64) -> Option<NodeId> {
-        Some(NodeId::from_u64(key))
-    }
-
-    #[inline]
-    fn inline_shift(
-        _doc: &crate::BaseDocument,
-        _node: NodeId,
-        _containing: taffy::Size<f32>,
-        _rtl: bool,
-    ) -> taffy::Point<f32> {
-        taffy::Point::ZERO
+    fn float_node(key: u64) -> Option<NodeKey> {
+        Some(NodeKey(key))
     }
 }

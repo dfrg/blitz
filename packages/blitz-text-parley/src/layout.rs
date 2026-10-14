@@ -1,32 +1,31 @@
 //! Measuring, breaking and placing an inline formatting context with Parley.
 
-use blitz_traits::node_id::NodeId;
+use blitz_text::{
+    BoxMeasure, ContentWidths, LineExclusions, LinesExtent, NodeKey, Placement, TextStyle,
+};
 use parley::{AlignmentOptions, BreakReason, IndentOptions};
-use style::properties::ComputedValues;
-use style::values::{computed::CSSPixelLength, generics::text::GenericTextIndent};
 
+#[cfg(feature = "floats")]
+use blitz_text::FloatRequest;
 #[cfg(feature = "floats")]
 use parley::YieldData;
 
-use super::{TextLayout, style as stylo_to_parley};
-#[cfg(feature = "floats")]
-use crate::text::FloatRequest;
-use crate::text::{BoxMeasure, ContentWidths, LineExclusions, LinesExtent, Placement};
+use crate::{TextLayout, style as css_to_parley};
 
 impl TextLayout {
     /// Whether the content holds no text and no inline boxes.
-    pub(super) fn holds_nothing(&self) -> bool {
+    pub(crate) fn holds_nothing(&self) -> bool {
         self.text.is_empty() && self.layout.inline_boxes().len() == 0
     }
 
     /// Gives the inline boxes their sizes, and sets the first line's indent.
-    pub(super) fn prepare_lines(&mut self, sizes: &[BoxMeasure], style: Option<&ComputedValues>) {
+    pub(crate) fn prepare_lines(&mut self, sizes: &[BoxMeasure], style: Option<&impl TextStyle>) {
         let scale = self.layout.scale();
         self.floats.clear();
         self.floats.extend(sizes.iter().filter_map(|measured| {
             let margin = measured.margin;
             Some((
-                measured.node.as_u64(),
+                measured.key.0,
                 measured.float?,
                 (margin.left + margin.right + measured.size.width) * scale,
                 (margin.top + margin.bottom + measured.size.height) * scale,
@@ -35,13 +34,13 @@ impl TextLayout {
         // The boxes are measured in the order the content holds them.
         let mut next = 0;
         for ibox in self.layout.inline_boxes_mut() {
-            let node = NodeId::from_u64(ibox.id);
+            let key = NodeKey(ibox.id);
             let measured = match sizes.get(next) {
-                Some(measured) if measured.node == node => {
+                Some(measured) if measured.key == key => {
                     next += 1;
                     Some(measured)
                 }
-                _ => sizes.iter().find(|measured| measured.node == node),
+                _ => sizes.iter().find(|measured| measured.key == key),
             };
             let measured = measured.filter(|_| ibox.kind == parley::InlineBoxKind::InFlow);
             let Some(measured) = measured else {
@@ -60,9 +59,9 @@ impl TextLayout {
             // baseline splits that space into ascent (`margin.top + baseline`) and descent
             // (`margin.bottom + height - baseline`), either of which may be negative. A box
             // without a baseline sits on the baseline and cannot reserve negative space.
-            // Kept finite: huge author lengths can sum to infinity, which is taller than
-            // the line breaker's `f32::MAX` height limit, and it then yields
-            // `MaxHeightExceeded` for this box forever without advancing.
+            // Kept finite: huge author lengths can sum to infinity, which is taller than the line
+            // breaker's `f32::MAX` height limit, and it then yields `MaxHeightExceeded` for this
+            // box forever without advancing.
             let margin_box_height = margin.top + margin.bottom + measured.size.height;
             ibox.height = if ibox.baseline.is_some() {
                 (margin_box_height * scale).min(f32::MAX)
@@ -77,14 +76,9 @@ impl TextLayout {
 
     /// Sets the lines' `text-indent` as `style`, the inline root's computed style, says, with
     /// percentages of `basis` CSS pixels.
-    fn set_indent(&mut self, style: Option<&ComputedValues>, basis: f32) {
-        let text_indent = style
-            .map(|s| s.slow_clone_text_indent())
-            .unwrap_or_else(GenericTextIndent::zero);
-        let amount = text_indent
-            .length
-            .resolve(CSSPixelLength::new(basis.max(0.0)))
-            .px();
+    fn set_indent(&mut self, style: Option<&impl TextStyle>, basis: f32) {
+        let text_indent = style.map(|s| s.text_indent()).unwrap_or_default();
+        let amount = text_indent.length.resolve(basis.max(0.0));
         self.layout.set_text_indent(
             amount * self.layout.scale(),
             IndentOptions {
@@ -95,12 +89,10 @@ impl TextLayout {
     }
 
     /// The content's min-content and max-content widths, with its floats.
-    pub(super) fn widths(&mut self) -> ContentWidths {
-        // TODO: Cache content widths.
-        //
-        // This is a little tricky as the size of the inline boxes may depend on whether we are sizing under
-        // and a min-content or max-content constraint. So if we want to compute both widths in one pass then
-        // we need to store both a min-content and max-content size on each box.
+    pub(crate) fn widths(&mut self) -> ContentWidths {
+        // The content widths could be cached, but the size of the inline boxes may depend on
+        // whether they are sized under a min-content or max-content constraint, so computing both
+        // widths in one pass would keep both sizes on each box.
         //
         // A float takes room along the line only as the content is measured: with a soft wrap
         // opportunity either side, the widest float is as wide as the content gets at
@@ -137,10 +129,10 @@ impl TextLayout {
     }
 
     /// Breaks the lines around the floats, and aligns them.
-    pub(super) fn break_into_lines(
+    pub(crate) fn break_into_lines(
         &mut self,
         width: f32,
-        style: Option<&ComputedValues>,
+        style: Option<&impl TextStyle>,
         exclusions: &mut impl LineExclusions,
     ) {
         // Percentage indents are of the content box the lines are broken in.
@@ -172,7 +164,6 @@ impl TextLayout {
                         state.set_line_x(left);
                     }
                     YieldData::MaxHeightExceeded(_data) => {
-                        // TODO
                         continue;
                     }
                     YieldData::InlineBoxBreak(box_break_data) => {
@@ -196,7 +187,7 @@ impl TextLayout {
                         state.set_line_max_advance(right - left);
                         state.set_line_x(left);
 
-                        // Floats are out-of-flow and must not contribute to the line's height.
+                        // Floats are out of flow and do not add to the line's height.
                         state.append_inline_box_to_line(
                             box_break_data.advance,
                             f32::NEG_INFINITY,
@@ -211,11 +202,11 @@ impl TextLayout {
         let (alignment, last_line_alignment) = style
             .map(|s| {
                 (
-                    stylo_to_parley::text_align(s.slow_clone_text_align()),
-                    stylo_to_parley::text_align_last(s.slow_clone_text_align_last()),
+                    css_to_parley::text_align(s.text_align()),
+                    css_to_parley::text_align_last(s.text_align_last()),
                 )
             })
-            .unwrap_or((parley::layout::Alignment::Start, None));
+            .unwrap_or((parley::Alignment::Start, None));
 
         self.layout.align(
             alignment,
@@ -227,10 +218,10 @@ impl TextLayout {
     }
 
     /// How far the lines reach, and where their baselines are.
-    pub(super) fn lines_extent(&self) -> LinesExtent {
-        // Parley lays out empty text as a single strut-height line (text-editor semantics),
-        // but a line box containing no text, inline boxes or other in-flow content is a
-        // zero-height line box in CSS (CSS2 §9.4.2).
+    pub(crate) fn lines_extent(&self) -> LinesExtent {
+        // Parley lays out empty text as a single strut-height line (text-editor semantics), but a
+        // line box containing no text, inline boxes or other in-flow content is a zero-height line
+        // box in CSS (CSS2 §9.4.2).
         let has_inline_content = !self.holds_nothing();
 
         let mut height = if has_inline_content {
@@ -240,9 +231,9 @@ impl TextLayout {
         };
 
         // A forced line break (e.g. `<br>` or a preserved newline) at the end of the inline
-        // content ends the final line box without starting a new one. Parley still emits an
-        // empty line after it (so that editors have a line to place the cursor on), so that
-        // line is excluded from the measured height (and from the last baseline).
+        // content ends the final line box without starting a new one. Parley still emits an empty
+        // line after it (so that editors have a line to place the cursor on), so that line is
+        // excluded from the measured height (and from the last baseline).
         let line_count = self.layout.len();
         let mut trailing_empty_line = None;
         if line_count >= 2
@@ -277,7 +268,7 @@ impl TextLayout {
     }
 
     /// Where the lines put each inline box.
-    pub(super) fn box_placements(&self) -> impl Iterator<Item = Placement> + '_ {
+    pub(crate) fn box_placements(&self) -> impl Iterator<Item = Placement> + '_ {
         // Walking a line's items builds every glyph run on it, so lines are only walked when
         // there are boxes to find.
         let has_inline_boxes = self.layout.inline_boxes().len() > 0;
@@ -285,8 +276,8 @@ impl TextLayout {
         lines.into_iter().flatten().flat_map(|line| {
             let metrics = *line.metrics();
             line.items().filter_map(move |item| match item {
-                parley::layout::PositionedLayoutItem::InlineBox(ibox) => Some(Placement {
-                    node: NodeId::from_u64(ibox.id),
+                parley::PositionedLayoutItem::InlineBox(ibox) => Some(Placement {
+                    key: NodeKey(ibox.id),
                     x: ibox.x,
                     // An out-of-flow box is zero-sized, so this is the baseline for it.
                     top: ibox.y,
@@ -296,7 +287,7 @@ impl TextLayout {
                     block_start: metrics.block_max_coord,
                     rtl: None,
                 }),
-                parley::layout::PositionedLayoutItem::GlyphRun(_) => None,
+                parley::PositionedLayoutItem::GlyphRun(_) => None,
             })
         })
     }

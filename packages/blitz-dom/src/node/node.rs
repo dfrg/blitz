@@ -1159,8 +1159,8 @@ impl Node {
             if el.is_button_input() {
                 flags |= stylo_taffy::StyleFlags::IS_BUTTON_INPUT;
             }
-            if let Some(inline_layout) = el.inline_layout_data.as_deref() {
-                flags |= inline_layout.span_cb_flags;
+            if el.inline_layout_data.is_some() {
+                flags |= el.inline_span_cb_flags;
             }
         }
 
@@ -1624,7 +1624,7 @@ impl Node {
             let element_data = &self.element_data().unwrap();
             if let Some(ild) = element_data.inline_layout_data.as_ref() {
                 if let Some(hit) = ild.hit_test(x, y, true)
-                    && let Some(text_node) = self.tree().get(hit.node_id)
+                    && let Some(text_node) = self.tree().get(crate::text::key_node(hit.key))
                 {
                     let hit_node = if matches!(text_node.data, NodeData::Text(_)) {
                         text_node
@@ -1686,9 +1686,7 @@ impl Node {
 
         let element_data = self.element_data()?;
         let inline_layout = element_data.inline_layout_data.as_ref()?;
-        inline_layout
-            .hit_test(x, y, false)
-            .map(|hit| hit.byte_offset)
+        inline_layout.hit_test(x, y, false).map(|hit| hit.offset)
     }
 
     /// Whether this node is a non-atomic inline element: one that has no layout box of its
@@ -1775,7 +1773,61 @@ impl Node {
 
         let inline_root = self.inline_root_ancestor()?;
         let inline_layout = inline_root.element_data()?.inline_layout_data.as_ref()?;
-        Some(inline_layout.fragment_rects(inline_root, self))
+        let root_layout = inline_root.unrounded_layout();
+        let content_box_inset = root_layout.padding + root_layout.border;
+        let scale = f64::from(inline_layout.scale());
+        let content = kurbo::Size::new(
+            f64::from(root_layout.content_box_width()) * scale,
+            f64::from(root_layout.content_box_height()) * scale,
+        );
+        // `position: relative` moves the box and the boxes it is in, where the backend paints
+        // them moved.
+        let shift =
+            if <crate::text::TextLayout as crate::text::InlineLayoutEngine>::SHIFTS_RELATIVE_INLINES
+            {
+                crate::layout::inline::relative_shift(
+                    Some(self),
+                    content / scale,
+                    inline_root.primary_styles().is_some_and(|styles| {
+                        styles.slow_clone_direction() == style::computed_values::direction::T::Rtl
+                    }),
+                )
+            } else {
+                kurbo::Vec2::ZERO
+            };
+        let (root_id, node_id) = (inline_root.id, self.id);
+        // Whether `key` is the node, or inside it, below the inline root.
+        let contains = move |key: crate::text::NodeKey| {
+            let mut id = crate::text::key_node(key);
+            loop {
+                if id == node_id {
+                    return true;
+                }
+                if id == root_id {
+                    return false;
+                }
+                match self.with(id).parent {
+                    Some(parent) => id = parent,
+                    None => return false,
+                }
+            }
+        };
+        Some(
+            inline_layout
+                .fragment_rects(
+                    crate::text::node_key(self.id),
+                    (content_box_inset.left, content_box_inset.top),
+                    content,
+                    shift,
+                    contains,
+                )
+                .map(|rect| taffy::Rect {
+                    left: rect.x0 as f32,
+                    top: rect.y0 as f32,
+                    right: rect.x1 as f32,
+                    bottom: rect.y1 as f32,
+                }),
+        )
     }
 
     /// CSSOM View's `offsetLeft`/`offsetTop`: the offset of this node's border box from the

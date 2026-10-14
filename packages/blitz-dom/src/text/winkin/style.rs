@@ -1,82 +1,16 @@
-//! Conversion from Stylo computed values to winkin's styles.
+//! Conversion from a [`TextStyle`] to winkin's styles.
 //!
-//! Every length is in device pixels, which is what Blitz lays text out in.
-//! A percentage only layout can resolve is passed on as a fraction: a
-//! margin's or padding's of the containing block, a `word-spacing`
-//! percentage of the space it widens, a `text-indent` percentage of the
+//! Every length is in device pixels, which is what Blitz lays text out in. A percentage only
+//! layout can resolve is passed on as a fraction: a margin's or padding's of the containing
+//! block, a `word-spacing` percentage of the space it widens, a `text-indent` percentage of the
 //! line.
 //!
-//! What Stylo does not compute stays at winkin's initial value:
-//! `white-space-trim`, `text-emphasis-skip`, `line-padding`,
-//! `line-fit-edge`, `initial-letter-align` and `text-group-align`.
+//! What the style does not compute stays at winkin's initial value: `white-space-trim`,
+//! `text-emphasis-skip`, `line-padding`, `line-fit-edge`, `initial-letter-align` and
+//! `text-group-align`.
 
-use std::borrow::Cow;
-
-use style::Atom;
-use style::computed_values::box_decoration_break::T as StyloBoxDecorationBreak;
-use style::computed_values::direction::T as StyloDirection;
-use style::computed_values::font_kerning::T as StyloFontKerning;
-use style::computed_values::font_optical_sizing::T as StyloFontOpticalSizing;
-use style::computed_values::font_variant_caps::T as StyloFontVariantCaps;
-use style::computed_values::font_variant_emoji::T as StyloFontVariantEmoji;
-use style::computed_values::font_variant_position::T as StyloFontVariantPosition;
-use style::computed_values::hyphens::T as StyloHyphens;
-use style::computed_values::ruby_align::T as StyloRubyAlign;
-use style::computed_values::ruby_overhang::T as StyloRubyOverhang;
-use style::computed_values::text_orientation::T as StyloTextOrientation;
-use style::computed_values::text_spacing_trim::T as StyloTextSpacingTrim;
-use style::computed_values::text_wrap_mode::T as StyloTextWrapMode;
-use style::computed_values::text_wrap_style::T as StyloTextWrapStyle;
-use style::computed_values::unicode_bidi::T as StyloUnicodeBidi;
-use style::computed_values::white_space_collapse::T as StyloWhiteSpace;
-use style::logical_geometry::WritingMode as StyloWritingMode;
-use style::properties::ComputedValues;
-use style::servo_arc::Arc as ServoArc;
-use style::stylesheets::FontFeatureValuesRule;
-use style::stylesheets::font_feature_values_rule::{FFVDeclaration, PairValues, SingleValue};
-use style::stylist::Stylist;
-use style::values::CustomIdent;
-use style::values::computed::font::{
-    FontFamily as StyloFontFamily, FontStyle as StyloFontStyle,
-    GenericFontFamily as StyloGenericFontFamily,
-};
-use style::values::computed::font::{
-    FontSynthesis as StyloFontSynthesis, FontSynthesisStyle as StyloFontSynthesisStyle,
-    FontVariantEastAsian, FontVariantLigatures, FontVariantNumeric, LineHeight as StyloLineHeight,
-    SingleFontFamily,
-};
-use style::values::computed::length_percentage::Unpacked;
-use style::values::computed::text::TextAlignLast as StyloTextAlignLast;
-use style::values::computed::text::TextEmphasisStyle as StyloTextEmphasisStyle;
-use style::values::computed::text::{
-    TextFit as StyloTextFit, TextFitKind as StyloTextFitKind, TextFitTarget as StyloTextFitTarget,
-};
-use style::values::computed::{
-    BorderSideWidth, Length, LengthPercentage as StyloLengthPercentage,
-    TextTransform as StyloTextTransform,
-};
-use style::values::computed::{
-    HangingPunctuation as StyloHangingPunctuation, TextCombineUpright as StyloTextCombineUpright,
-    TextDecorationSkipSpaces as StyloTextDecorationSkipSpaces, TextSecurity as StyloTextSecurity,
-};
-use style::values::generics::box_::{BaselineShiftKeyword, GenericBaselineShift};
-use style::values::generics::font::GenericFontSizeAdjust;
-use style::values::generics::length::GenericLengthOrNumber as StyloLengthOrNumber;
-use style::values::generics::length::GenericMargin;
-use style::values::generics::text::InitialLetterSink as StyloInitialLetterSink;
-use style::values::specified::HyphenateCharacter;
-use style::values::specified::TextAlignKeyword;
-use style::values::specified::border::BorderStyle;
-use style::values::specified::box_::{
-    AlignmentBaseline, DominantBaseline as StyloDominantBaseline,
-};
-use style::values::specified::font::VariantAlternates;
-use style::values::specified::text::{
-    RubyPosition as StyloRubyPosition, TextAutospace as StyloTextAutospace,
-    TextBoxEdge as StyloTextBoxEdge, TextBoxTrim as StyloTextBoxTrim, TextDecorationLine,
-    TextEdgeKeyword, TextEmphasisPosition as StyloTextEmphasisPosition,
-    TextJustify as StyloTextJustify, TextOverflowSide as StyloTextOverflowSide,
-};
+use blitz_text::style::{self as css, TextStyle};
+use blitz_text::{FeatureBlock, FontFeatureValues};
 use winkin::style::{
     AdjustMetric, BaseDirection, BidiGroup, BoxDecorationBreak, Direction, DominantBaseline,
     EdgesGroup, EmphasisPosition, EmphasisSide, EmphasisSkip, EmphasisVerticalSide, FontFamilyName,
@@ -90,186 +24,100 @@ use winkin::style::{
     TextOverflow, TextSpacingTrim, TextTransform, TextWrapMode, TextWrapStyle, UnicodeBidi,
     VerticalAlign, WhiteSpaceCollapse, WordBreak, WritingMode,
 };
-use winkin::style::{
-    FontStyle, FontWeight, FontWidth, GenericFamily, TextDecorationSkipSpaces, TextFit,
-    TextFitKind, TextFitTarget,
-};
+use winkin::style::{TextFit, TextFitKind, TextFitTarget};
 use winkin::{ComputedBlockStyle, ComputedStyle};
 
-/// The document's `@font-feature-values` rules, which name the values
-/// `font-variant-alternates` asks for, the least precedent first.
-#[derive(Default)]
-pub(crate) struct FeatureValues(Vec<ServoArc<FontFeatureValuesRule>>);
-
-impl FeatureValues {
-    /// The rules in effect in `stylist`, in cascade order: by origin, then
-    /// by layer.
-    pub(crate) fn of(stylist: &Stylist) -> Self {
-        Self(
-            stylist
-                .iter_extra_data_origins_rev()
-                .flat_map(|(data, _)| data.font_feature_values.iter())
-                .map(|(rule, _)| rule.clone())
-                .collect(),
-        )
-    }
-
-    /// Adds the features `computed`'s `font-variant-alternates` resolves to.
-    ///
-    /// Chrome resolves a name against the rules for the family a font is
-    /// taken from. Here it is the first family in `font-family` that any
-    /// rule names, and a name no rule for it defines adds nothing.
-    fn resolve(&self, computed: &ComputedValues, out: &mut Vec<FontFeature>) {
-        if self.0.is_empty() {
-            return;
-        }
-        let alternates = computed.slow_clone_font_variant_alternates();
-        if alternates
-            .iter()
-            .all(|alternate| matches!(alternate, VariantAlternates::HistoricalForms))
-        {
-            return;
-        }
-        let names_family = |rule: &FontFeatureValuesRule, family: &str| {
-            rule.family_names
-                .iter()
-                .any(|name| name.name.as_str().eq_ignore_ascii_case(family))
-        };
-        let Some(family) = computed
-            .get_font()
-            .font_family
-            .families
-            .list
-            .iter()
-            .filter_map(|family| match family {
-                SingleFontFamily::FamilyName(name) => Some(&*name.name),
-                SingleFontFamily::Generic(_) => None,
-            })
-            .find(|family| self.0.iter().any(|rule| names_family(rule, family)))
-        else {
-            return;
-        };
-        // A later rule outweighs an earlier one, name by name.
-        let find = |name: &CustomIdent, block: Block| {
-            self.0
-                .iter()
-                .rev()
-                .filter(|rule| names_family(rule, family))
-                .find_map(|rule| block.find(rule, &name.0))
-        };
-        let feature = |tag: [u8; 4], value: u32| FontFeature {
-            tag: Tag::from_bytes(tag),
-            value: value.min(u32::from(u16::MAX)) as u16,
-        };
-        // `ssNN` and `cvNN`, for a number from 1 to 99.
-        let numbered = |prefix: [u8; 2], number: u32| {
-            (1..=99).contains(&number).then(|| {
-                [
-                    prefix[0],
-                    prefix[1],
-                    b'0' + (number / 10) as u8,
-                    b'0' + (number % 10) as u8,
-                ]
-            })
-        };
-        for alternate in alternates.iter() {
-            match alternate {
-                VariantAlternates::Stylistic(name) => {
-                    if let Some(value) = find(name, Block::Stylistic) {
-                        out.push(feature(*b"salt", value[0]));
-                    }
-                }
-                VariantAlternates::Swash(name) => {
-                    if let Some(value) = find(name, Block::Swash) {
-                        out.push(feature(*b"swsh", value[0]));
-                        out.push(feature(*b"cswh", value[0]));
-                    }
-                }
-                VariantAlternates::Ornaments(name) => {
-                    if let Some(value) = find(name, Block::Ornaments) {
-                        out.push(feature(*b"ornm", value[0]));
-                    }
-                }
-                VariantAlternates::Annotation(name) => {
-                    if let Some(value) = find(name, Block::Annotation) {
-                        out.push(feature(*b"nalt", value[0]));
-                    }
-                }
-                VariantAlternates::Styleset(names) => {
-                    for name in names.iter() {
-                        for set in find(name, Block::Styleset).unwrap_or_default() {
-                            if let Some(tag) = numbered(*b"ss", set) {
-                                out.push(feature(tag, 1));
-                            }
-                        }
-                    }
-                }
-                VariantAlternates::CharacterVariant(names) => {
-                    for name in names.iter() {
-                        let Some(variant) = find(name, Block::CharacterVariant) else {
-                            continue;
-                        };
-                        if let Some(tag) = numbered(*b"cv", variant[0]) {
-                            out.push(feature(tag, variant.get(1).copied().unwrap_or(1)));
-                        }
-                    }
-                }
-                VariantAlternates::HistoricalForms => {}
-            }
-        }
-    }
-}
-
-/// A block of an `@font-feature-values` rule, which one function of
-/// `font-variant-alternates` reads.
-#[derive(Copy, Clone)]
-enum Block {
-    Stylistic,
-    Swash,
-    Ornaments,
-    Annotation,
-    Styleset,
-    CharacterVariant,
-}
-
-impl Block {
-    /// The values `rule` gives `name` in this block, where it gives any.
-    fn find(self, rule: &FontFeatureValuesRule, name: &Atom) -> Option<Vec<u32>> {
-        let single = |declarations: &[FFVDeclaration<SingleValue>]| {
-            declarations
-                .iter()
-                .find(|declaration| declaration.name == *name)
-                .map(|declaration| vec![declaration.value.0])
-        };
-        match self {
-            Self::Stylistic => single(&rule.stylistic),
-            Self::Swash => single(&rule.swash),
-            Self::Ornaments => single(&rule.ornaments),
-            Self::Annotation => single(&rule.annotation),
-            Self::Styleset => rule
-                .styleset
-                .iter()
-                .find(|declaration| declaration.name == *name)
-                .map(|declaration| declaration.value.0.clone()),
-            Self::CharacterVariant => rule
-                .character_variant
-                .iter()
-                .find(|declaration| declaration.name == *name)
-                .map(|declaration| {
-                    let PairValues(first, second) = declaration.value;
-                    std::iter::once(first).chain(second).collect()
-                }),
-        }
-    }
-}
-
-/// The lists an element's style borrows: its families, and the features
-/// and variations it asks for.
+/// Adds the features `style`'s `font-variant-alternates` resolves to through the document's
+/// `@font-feature-values` rules, `values`.
 ///
-/// The features are what `font-variant-alternates` names through
-/// `@font-feature-values`, then `font-feature-settings`, as Chrome orders
-/// them: the other `font-variant-*` properties are winkin's to turn into
-/// features, and to synthesize where the font has none.
+/// Chrome resolves a name against the rules for the family a font is taken from. Here it is the
+/// first family in `font-family` that any rule names, and a name no rule for it defines adds
+/// nothing.
+fn resolve_alternates(
+    style: &impl TextStyle,
+    values: &impl FontFeatureValues,
+    out: &mut Vec<FontFeature>,
+) {
+    if values.is_empty() {
+        return;
+    }
+    if style
+        .font_variant_alternates()
+        .all(|alternate| matches!(alternate, css::VariantAlternate::HistoricalForms))
+    {
+        return;
+    }
+    let Some(family) = style.font_family().find_map(|family| match family {
+        css::FontFamilyName::Named(name) if values.names_family(&name) => Some(name),
+        _ => None,
+    }) else {
+        return;
+    };
+    let find = |block: FeatureBlock, name: &str| values.find(&family, block, name);
+    let feature = |tag: [u8; 4], value: u32| FontFeature {
+        tag: Tag::from_bytes(tag),
+        value: value.min(u32::from(u16::MAX)) as u16,
+    };
+    // `ssNN` and `cvNN`, for a number from 1 to 99.
+    let numbered = |prefix: [u8; 2], number: u32| {
+        (1..=99).contains(&number).then(|| {
+            [
+                prefix[0],
+                prefix[1],
+                b'0' + (number / 10) as u8,
+                b'0' + (number % 10) as u8,
+            ]
+        })
+    };
+    for alternate in style.font_variant_alternates() {
+        match alternate {
+            css::VariantAlternate::Stylistic(name) => {
+                if let Some(value) = find(FeatureBlock::Stylistic, name) {
+                    out.push(feature(*b"salt", value[0]));
+                }
+            }
+            css::VariantAlternate::Swash(name) => {
+                if let Some(value) = find(FeatureBlock::Swash, name) {
+                    out.push(feature(*b"swsh", value[0]));
+                    out.push(feature(*b"cswh", value[0]));
+                }
+            }
+            css::VariantAlternate::Ornaments(name) => {
+                if let Some(value) = find(FeatureBlock::Ornaments, name) {
+                    out.push(feature(*b"ornm", value[0]));
+                }
+            }
+            css::VariantAlternate::Annotation(name) => {
+                if let Some(value) = find(FeatureBlock::Annotation, name) {
+                    out.push(feature(*b"nalt", value[0]));
+                }
+            }
+            css::VariantAlternate::Styleset(name) => {
+                for set in find(FeatureBlock::Styleset, name).unwrap_or_default() {
+                    if let Some(tag) = numbered(*b"ss", set) {
+                        out.push(feature(tag, 1));
+                    }
+                }
+            }
+            css::VariantAlternate::CharacterVariant(name) => {
+                let Some(variant) = find(FeatureBlock::CharacterVariant, name) else {
+                    continue;
+                };
+                if let Some(tag) = numbered(*b"cv", variant[0]) {
+                    out.push(feature(tag, variant.get(1).copied().unwrap_or(1)));
+                }
+            }
+            css::VariantAlternate::HistoricalForms => {}
+        }
+    }
+}
+
+/// The lists an element's style borrows: its families, and the features and variations it asks
+/// for.
+///
+/// The features are what `font-variant-alternates` names through `@font-feature-values`, then
+/// `font-feature-settings`, as Chrome orders them: the other `font-variant-*` properties are
+/// winkin's to turn into features, and to synthesize where the font has none.
 pub(crate) struct FontLists<'a> {
     families: Vec<FontFamilyName<'a>>,
     features: Vec<FontFeature>,
@@ -277,47 +125,27 @@ pub(crate) struct FontLists<'a> {
 }
 
 impl<'a> FontLists<'a> {
-    /// The lists `computed` asks for, borrowing its family names.
-    pub(crate) fn of(computed: &'a ComputedValues, values: &FeatureValues) -> Self {
-        let font = computed.get_font();
+    /// The lists `style` asks for, borrowing its family names.
+    pub(crate) fn of<S: TextStyle>(style: &'a S, values: &impl FontFeatureValues) -> Self {
         // The initial `font-family` names no family: winkin then sets the text in the language's
         // standard font, as Chrome sets it, where `serif` would take the serif setting, which
         // differs for Chinese, Japanese and Korean.
-        let families = if is_initial_family(&font.font_family) {
+        let families = if style.font_family_is_initial() {
             Vec::new()
         } else {
-            font.font_family
-                .families
-                .list
-                .iter()
-                .map(font_family_name)
-                .collect()
+            style.font_family().map(family_name).collect()
         };
         let mut features = Vec::new();
-        values.resolve(computed, &mut features);
-        features.extend(font.font_feature_settings.0.iter().map(|setting| {
-            FontFeature::new(
-                Tag::from_bytes(setting.tag.0.to_be_bytes()),
-                setting.value as u16,
-            )
-        }));
+        resolve_alternates(style, values, &mut features);
+        features.extend(style.font_feature_settings());
         Self {
             families,
             features,
-            variations: font
-                .font_variation_settings
-                .0
-                .iter()
-                .map(|setting| FontVariation {
-                    tag: Tag::from_bytes(setting.tag.0.to_be_bytes()),
-                    value: setting.value,
-                })
-                .collect(),
+            variations: style.font_variation_settings().collect(),
         }
     }
 
-    /// These lists with `families` tried first, as a list marker's bullet
-    /// font is.
+    /// These lists with `families` tried first, as a list marker's bullet font is.
     pub(crate) fn with_families_first(mut self, first: &[FontFamilyName<'static>]) -> Self {
         let rest = std::mem::take(&mut self.families);
         self.families = first.iter().cloned().chain(rest).collect();
@@ -325,46 +153,32 @@ impl<'a> FontLists<'a> {
     }
 }
 
-/// Whether `family` is the initial `font-family`.
-///
-/// Stylo's initial value is `serif`, held in one shared list that inheriting and `initial` keep;
-/// a `serif` a style sheet names is parsed into a list of its own.
-fn is_initial_family(family: &StyloFontFamily) -> bool {
-    std::ptr::eq(
-        family.families.list.as_ptr(),
-        StyloFontFamily::generic(StyloGenericFontFamily::Serif)
-            .families
-            .list
-            .as_ptr(),
-    )
-}
-
-/// A family of `font-family`, as fontwich names it.
-pub(crate) fn font_family_name(family: &SingleFontFamily) -> FontFamilyName<'_> {
-    match family {
-        SingleFontFamily::FamilyName(name) => family_name(name.name.as_str()),
-        SingleFontFamily::Generic(generic) => FontFamilyName::Generic(generic_family(*generic)),
-    }
-}
-
-/// A named family, as Blitz names it to Parley: the Apple system font's
-/// legacy names are the `system-ui` generic.
-fn family_name(name: &str) -> FontFamilyName<'_> {
+/// A family of `font-family`, as Blitz names it: the Apple system font's legacy names are the
+/// `system-ui` generic.
+pub(crate) fn family_name(family: FontFamilyName<'_>) -> FontFamilyName<'_> {
     #[cfg(target_vendor = "apple")]
-    if name == "-apple-system" || name == "BlinkMacSystemFont" {
+    if let FontFamilyName::Named(name) = &family
+        && (name == "-apple-system" || name == "BlinkMacSystemFont")
+    {
         return FontFamilyName::Generic(winkin::style::GenericFamily::SystemUi);
     }
-    FontFamilyName::Named(Cow::Borrowed(name))
+    family
 }
 
-/// A length-percentage as a length in device pixels and a fraction of
-/// whatever layout resolves it against.
+/// A length-percentage as a length in device pixels and a fraction of whatever layout resolves
+/// it against.
 ///
-/// `calc()` mixing the two is split by resolving it against two bases: the
-/// value is linear in its basis.
-fn length_percentage(value: &StyloLengthPercentage, scale: f32) -> LengthPercentage {
-    let at_zero = value.resolve(Length::new(0.0)).px();
-    let at_hundred = value.resolve(Length::new(100.0)).px();
+/// `calc()` mixing the two is split by resolving it against two bases: the value is linear in
+/// its basis.
+fn length_percentage(value: css::LengthPercentage, scale: f32) -> LengthPercentage {
+    if let css::LengthPercentage::Calc { px, fraction } = value {
+        return LengthPercentage {
+            px: px * scale,
+            fraction,
+        };
+    }
+    let at_zero = value.resolve(0.0);
+    let at_hundred = value.resolve(100.0);
     LengthPercentage {
         px: at_zero * scale,
         fraction: (at_hundred - at_zero) / 100.0,
@@ -373,194 +187,176 @@ fn length_percentage(value: &StyloLengthPercentage, scale: f32) -> LengthPercent
 
 /// Converts an element's computed style, its lists borrowed from `lists`.
 ///
-/// Lengths are scaled by `scale` into device pixels. Percentages of the
-/// containing block stay percentages, which winkin resolves against the
-/// basis each measure gives it. `language` is the content language from the
-/// nearest `lang`.
-pub(crate) fn computed_style<'a>(
+/// Lengths are scaled by `scale` into device pixels. Percentages of the containing block stay
+/// percentages, which winkin resolves against the basis each measure gives it. `language` is the
+/// content language from the nearest `lang`.
+pub(crate) fn computed_style<'a, S: TextStyle>(
     lists: &'a FontLists<'_>,
-    computed: &'a ComputedValues,
+    style: &'a S,
     scale: f32,
     language: Option<Language>,
 ) -> ComputedStyle<'a> {
     ComputedStyle {
-        font: font_group(computed, lists, scale),
-        text: text_group(computed, scale, language),
-        line: line_group(computed, scale),
+        font: font_group(style, lists, scale),
+        text: text_group(style, scale, language),
+        line: line_group(style, scale),
         bidi: BidiGroup {
-            direction: if computed.get_inherited_box().direction == StyloDirection::Rtl {
-                Direction::Rtl
-            } else {
-                Direction::Ltr
-            },
-            unicode_bidi: unicode_bidi(computed),
+            direction: direction(style),
+            unicode_bidi: unicode_bidi(style),
         },
         orientation: OrientationGroup {
-            // Which way each character stands in a vertical line. It
-            // inherits, so a span may set it against the block around it.
-            text_orientation: match computed.slow_clone_text_orientation() {
-                StyloTextOrientation::Mixed => TextOrientation::Mixed,
-                StyloTextOrientation::Upright => TextOrientation::Upright,
-                StyloTextOrientation::Sideways => TextOrientation::Sideways,
+            // Which way each character stands in a vertical line. It inherits, so a span may set
+            // it against the block around it.
+            text_orientation: match style.text_orientation() {
+                css::TextOrientation::Mixed => TextOrientation::Mixed,
+                css::TextOrientation::Upright => TextOrientation::Upright,
+                css::TextOrientation::Sideways => TextOrientation::Sideways,
             },
-            text_combine_upright: match computed.slow_clone_text_combine_upright() {
-                StyloTextCombineUpright::None => TextCombineUpright::None,
-                StyloTextCombineUpright::All => TextCombineUpright::All,
-                StyloTextCombineUpright::Digits(count) => TextCombineUpright::Digits(count),
+            text_combine_upright: match style.text_combine_upright() {
+                css::TextCombineUpright::None => TextCombineUpright::None,
+                css::TextCombineUpright::All => TextCombineUpright::All,
+                css::TextCombineUpright::Digits(count) => TextCombineUpright::Digits(count),
             },
         },
-        edges: edges_group(computed, scale),
+        edges: edges_group(style, scale),
         ruby: RubyGroup {
-            position: ruby_position(computed),
-            align: match computed.slow_clone_ruby_align() {
-                StyloRubyAlign::SpaceAround => RubyAlign::SpaceAround,
-                StyloRubyAlign::SpaceBetween => RubyAlign::SpaceBetween,
-                StyloRubyAlign::Center => RubyAlign::Center,
-                StyloRubyAlign::Start => RubyAlign::Start,
+            position: ruby_position(style),
+            align: match style.ruby_align() {
+                css::RubyAlign::SpaceAround => RubyAlign::SpaceAround,
+                css::RubyAlign::SpaceBetween => RubyAlign::SpaceBetween,
+                css::RubyAlign::Center => RubyAlign::Center,
+                css::RubyAlign::Start => RubyAlign::Start,
             },
-            overhang: match computed.slow_clone_ruby_overhang() {
-                StyloRubyOverhang::Auto => RubyOverhang::Auto,
-                StyloRubyOverhang::Spaces => RubyOverhang::Spaces,
+            overhang: match style.ruby_overhang() {
+                css::RubyOverhang::Auto => RubyOverhang::Auto,
+                css::RubyOverhang::Spaces => RubyOverhang::Spaces,
             },
         },
-        paints: paints(computed),
-        outlines: outlines(computed),
-        decorates: decorates(computed),
+        paints: paints(style),
+        outlines: outlines(style),
+        decorates: decorates(style),
+    }
+}
+
+/// `direction`.
+pub(crate) fn direction(style: &impl TextStyle) -> Direction {
+    match style.direction() {
+        css::Direction::Ltr => Direction::Ltr,
+        css::Direction::Rtl => Direction::Rtl,
     }
 }
 
 /// `unicode-bidi`.
-pub(crate) fn unicode_bidi(computed: &ComputedValues) -> UnicodeBidi {
-    match computed.slow_clone_unicode_bidi() {
-        StyloUnicodeBidi::Normal => UnicodeBidi::Normal,
-        StyloUnicodeBidi::Embed => UnicodeBidi::Embed,
-        StyloUnicodeBidi::Isolate => UnicodeBidi::Isolate,
-        StyloUnicodeBidi::BidiOverride => UnicodeBidi::BidiOverride,
-        StyloUnicodeBidi::IsolateOverride => UnicodeBidi::IsolateOverride,
-        StyloUnicodeBidi::Plaintext => UnicodeBidi::Plaintext,
+pub(crate) fn unicode_bidi(style: &impl TextStyle) -> UnicodeBidi {
+    match style.unicode_bidi() {
+        css::UnicodeBidi::Normal => UnicodeBidi::Normal,
+        css::UnicodeBidi::Embed => UnicodeBidi::Embed,
+        css::UnicodeBidi::Isolate => UnicodeBidi::Isolate,
+        css::UnicodeBidi::BidiOverride => UnicodeBidi::BidiOverride,
+        css::UnicodeBidi::IsolateOverride => UnicodeBidi::IsolateOverride,
+        css::UnicodeBidi::Plaintext => UnicodeBidi::Plaintext,
     }
 }
 
-/// Whether the box paints a background, a border or a box shadow, which keeps
-/// its fragment in the layout and makes a line ending in its text end exactly.
-/// An outline and a decoration line don't count. What it draws is read from
-/// the node when painting.
-fn paints(computed: &ComputedValues) -> bool {
-    let current_color = computed.slow_clone_color();
-    let background = computed.get_background();
-    let fills = background
-        .background_color
-        .resolve_to_absolute(&current_color)
-        .alpha
-        > 0.0;
-    let images = background
-        .background_image
-        .0
-        .iter()
-        .any(|image| !matches!(image, style::values::computed::Image::None));
-    let border = computed.get_border();
+/// Whether the box paints a background, a border or a box shadow, which keeps its fragment in the
+/// layout and makes a line ending in its text end exactly. An outline and a decoration line don't
+/// count. What it draws is read from the node when painting.
+fn paints(style: &impl TextStyle) -> bool {
+    let fills = style.background_color().components[3] > 0.0;
+    let widths = style.border_widths();
+    let styles = style.border_styles();
     let bordered = [
-        (&border.border_top_width, border.border_top_style),
-        (&border.border_right_width, border.border_right_style),
-        (&border.border_bottom_width, border.border_bottom_style),
-        (&border.border_left_width, border.border_left_style),
+        (widths.top, styles.top),
+        (widths.right, styles.right),
+        (widths.bottom, styles.bottom),
+        (widths.left, styles.left),
     ]
     .into_iter()
-    .any(|(width, style)| !style.none_or_hidden() && width.0.to_f32_px() > 0.0);
-    let shadowed = !computed.get_effects().box_shadow.0.is_empty();
-    fills || images || bordered || shadowed
+    .any(|(width, style)| !style.none_or_hidden() && width > 0.0);
+    fills || style.has_background_image() || bordered || style.has_box_shadow()
 }
 
 /// Whether the box draws an outline, which keeps its fragment in the layout.
-fn outlines(computed: &ComputedValues) -> bool {
-    let outline = computed.get_outline();
-    !outline.outline_style.none_or_hidden() && outline.outline_width.0.to_f32_px() > 0.0
+fn outlines(style: &impl TextStyle) -> bool {
+    let drawn = match style.outline_style() {
+        css::OutlineStyle::Auto => true,
+        css::OutlineStyle::Border(border) => !border.none_or_hidden(),
+    };
+    drawn && style.outline_width() > 0.0
 }
 
 /// Whether the element sets a decoration line that is drawn.
-pub(crate) fn decorates(computed: &ComputedValues) -> bool {
-    computed.slow_clone_text_decoration_line().intersects(
-        TextDecorationLine::UNDERLINE
-            | TextDecorationLine::OVERLINE
-            | TextDecorationLine::LINE_THROUGH,
-    )
+pub(crate) fn decorates(style: &impl TextStyle) -> bool {
+    style
+        .text_decoration_line()
+        .intersects(css::TextDecorationLine::DRAWN)
 }
 
-fn font_group<'a>(
-    computed: &ComputedValues,
-    lists: &'a FontLists<'_>,
-    scale: f32,
-) -> FontGroup<'a> {
-    let font = computed.get_font();
-    let synthesis = |value: StyloFontSynthesis| value == StyloFontSynthesis::Auto;
+fn font_group<'a>(style: &impl TextStyle, lists: &'a FontLists<'_>, scale: f32) -> FontGroup<'a> {
+    let synthesis = |value: css::FontSynthesis| value == css::FontSynthesis::Auto;
+    let font_style = style.font_style();
     FontGroup {
         families: &lists.families,
         features: &lists.features,
         variations: &lists.variations,
-        size: font.font_size.used_size.0.px() * scale,
-        weight: FontWeight::new(font.font_weight.value()),
-        width: FontWidth::from_percentage(font.font_width.0.to_float()),
-        style: match font.font_style {
-            StyloFontStyle::NORMAL => FontStyle::Normal,
-            StyloFontStyle::ITALIC => FontStyle::Italic,
-            oblique => FontStyle::Oblique(Some(oblique.oblique_degrees())),
-        },
+        size: style.font_size() * scale,
+        weight: style.font_weight(),
+        width: style.font_width(),
+        style: font_style,
         synthesis: FontSynthesis {
-            weight: synthesis(computed.slow_clone_font_synthesis_weight()),
+            weight: synthesis(style.font_synthesis_weight()),
             // `oblique-only` allows a slant only where one was asked for.
-            style: match computed.slow_clone_font_synthesis_style() {
-                StyloFontSynthesisStyle::Auto => true,
-                StyloFontSynthesisStyle::None => false,
-                StyloFontSynthesisStyle::ObliqueOnly => !matches!(
-                    font.font_style,
-                    style::values::computed::font::FontStyle::NORMAL
-                        | style::values::computed::font::FontStyle::ITALIC
-                ),
+            style: match style.font_synthesis_style() {
+                css::FontSynthesisStyle::Auto => true,
+                css::FontSynthesisStyle::None => false,
+                css::FontSynthesisStyle::ObliqueOnly => {
+                    matches!(font_style, css::FontStyle::Oblique(_))
+                }
             },
-            small_caps: synthesis(computed.slow_clone_font_synthesis_small_caps()),
-            position: synthesis(computed.slow_clone_font_synthesis_position()),
+            small_caps: synthesis(style.font_synthesis_small_caps()),
+            position: synthesis(style.font_synthesis_position()),
         },
-        variant_caps: match computed.slow_clone_font_variant_caps() {
-            StyloFontVariantCaps::Normal => FontVariantCaps::Normal,
-            StyloFontVariantCaps::SmallCaps => FontVariantCaps::SmallCaps,
-            StyloFontVariantCaps::AllSmallCaps => FontVariantCaps::AllSmallCaps,
-            StyloFontVariantCaps::PetiteCaps => FontVariantCaps::PetiteCaps,
-            StyloFontVariantCaps::AllPetiteCaps => FontVariantCaps::AllPetiteCaps,
-            StyloFontVariantCaps::Unicase => FontVariantCaps::Unicase,
-            StyloFontVariantCaps::TitlingCaps => FontVariantCaps::TitlingCaps,
+        variant_caps: match style.font_variant_caps() {
+            css::FontVariantCaps::Normal => FontVariantCaps::Normal,
+            css::FontVariantCaps::SmallCaps => FontVariantCaps::SmallCaps,
+            css::FontVariantCaps::AllSmallCaps => FontVariantCaps::AllSmallCaps,
+            css::FontVariantCaps::PetiteCaps => FontVariantCaps::PetiteCaps,
+            css::FontVariantCaps::AllPetiteCaps => FontVariantCaps::AllPetiteCaps,
+            css::FontVariantCaps::Unicase => FontVariantCaps::Unicase,
+            css::FontVariantCaps::TitlingCaps => FontVariantCaps::TitlingCaps,
         },
-        variant_position: match computed.slow_clone_font_variant_position() {
-            StyloFontVariantPosition::Normal => FontVariantPosition::Normal,
-            StyloFontVariantPosition::Sub => FontVariantPosition::Sub,
-            StyloFontVariantPosition::Super => FontVariantPosition::Super,
+        variant_position: match style.font_variant_position() {
+            css::FontVariantPosition::Normal => FontVariantPosition::Normal,
+            css::FontVariantPosition::Sub => FontVariantPosition::Sub,
+            css::FontVariantPosition::Super => FontVariantPosition::Super,
         },
-        variants: variants(computed),
-        variant_emoji: match computed.slow_clone_font_variant_emoji() {
-            StyloFontVariantEmoji::Normal => FontVariantEmoji::Normal,
-            StyloFontVariantEmoji::Text => FontVariantEmoji::Text,
-            StyloFontVariantEmoji::Emoji => FontVariantEmoji::Emoji,
-            StyloFontVariantEmoji::Unicode => FontVariantEmoji::Unicode,
+        variants: variants(style),
+        variant_emoji: match style.font_variant_emoji() {
+            css::FontVariantEmoji::Normal => FontVariantEmoji::Normal,
+            css::FontVariantEmoji::Text => FontVariantEmoji::Text,
+            css::FontVariantEmoji::Emoji => FontVariantEmoji::Emoji,
+            css::FontVariantEmoji::Unicode => FontVariantEmoji::Unicode,
         },
-        optical_sizing: match computed.slow_clone_font_optical_sizing() {
-            StyloFontOpticalSizing::Auto => FontOpticalSizing::Auto,
-            StyloFontOpticalSizing::None => FontOpticalSizing::None,
+        optical_sizing: match style.font_optical_sizing() {
+            css::FontOpticalSizing::Auto => FontOpticalSizing::Auto,
+            css::FontOpticalSizing::None => FontOpticalSizing::None,
         },
-        kerning: match computed.slow_clone_font_kerning() {
-            StyloFontKerning::Auto => FontKerning::Auto,
-            StyloFontKerning::Normal => FontKerning::Normal,
-            StyloFontKerning::None => FontKerning::None,
+        kerning: match style.font_kerning() {
+            css::FontKerning::Auto => FontKerning::Auto,
+            css::FontKerning::Normal => FontKerning::Normal,
+            css::FontKerning::None => FontKerning::None,
         },
-        language_override: match computed.slow_clone_font_language_override().0 {
-            0 => FontLanguageOverride::Normal,
-            tag => FontLanguageOverride::System(Tag::from_bytes(tag.to_be_bytes())),
+        language_override: match style.font_language_override() {
+            None => FontLanguageOverride::Normal,
+            Some(tag) => FontLanguageOverride::System(tag),
         },
-        size_adjust: match computed.slow_clone_font_size_adjust() {
-            GenericFontSizeAdjust::None => FontSizeAdjust::None,
-            GenericFontSizeAdjust::ExHeight(value) => adjust(AdjustMetric::ExHeight, value.0),
-            GenericFontSizeAdjust::CapHeight(value) => adjust(AdjustMetric::CapHeight, value.0),
-            GenericFontSizeAdjust::ChWidth(value) => adjust(AdjustMetric::ChWidth, value.0),
-            GenericFontSizeAdjust::IcWidth(value) => adjust(AdjustMetric::IcWidth, value.0),
-            GenericFontSizeAdjust::IcHeight(value) => adjust(AdjustMetric::IcHeight, value.0),
+        size_adjust: match style.font_size_adjust() {
+            css::FontSizeAdjust::None => FontSizeAdjust::None,
+            css::FontSizeAdjust::ExHeight(value) => adjust(AdjustMetric::ExHeight, value),
+            css::FontSizeAdjust::CapHeight(value) => adjust(AdjustMetric::CapHeight, value),
+            css::FontSizeAdjust::ChWidth(value) => adjust(AdjustMetric::ChWidth, value),
+            css::FontSizeAdjust::IcWidth(value) => adjust(AdjustMetric::IcWidth, value),
+            css::FontSizeAdjust::IcHeight(value) => adjust(AdjustMetric::IcHeight, value),
         },
     }
 }
@@ -569,17 +365,18 @@ fn adjust(metric: AdjustMetric, value: f32) -> FontSizeAdjust {
     FontSizeAdjust::Hold { metric, value }
 }
 
-/// The keywords of `font-variant-ligatures`, `-numeric`, `-east-asian` and
-/// `-alternates` as one set.
-fn variants(computed: &ComputedValues) -> FontVariants {
+/// The keywords of `font-variant-ligatures`, `-numeric`, `-east-asian` and `-alternates` as one
+/// set.
+fn variants(style: &impl TextStyle) -> FontVariants {
+    use css::{FontVariantEastAsian as E, FontVariantLigatures as L, FontVariantNumeric as N};
     let mut set = FontVariants::NORMAL;
     let mut add = |on: bool, keyword: FontVariants| {
         if on {
             set = set.union(keyword);
         }
     };
-    let ligatures = computed.slow_clone_font_variant_ligatures();
-    if ligatures.contains(FontVariantLigatures::NONE) {
+    let ligatures = style.font_variant_ligatures();
+    if ligatures.contains(L::NONE) {
         // `none` is every `no-` keyword.
         add(true, FontVariants::NO_COMMON_LIGATURES);
         add(true, FontVariants::NO_DISCRETIONARY_LIGATURES);
@@ -587,199 +384,164 @@ fn variants(computed: &ComputedValues) -> FontVariants {
         add(true, FontVariants::NO_CONTEXTUAL);
     }
     for (bit, keyword) in [
+        (L::COMMON_LIGATURES, FontVariants::COMMON_LIGATURES),
+        (L::NO_COMMON_LIGATURES, FontVariants::NO_COMMON_LIGATURES),
         (
-            FontVariantLigatures::COMMON_LIGATURES,
-            FontVariants::COMMON_LIGATURES,
-        ),
-        (
-            FontVariantLigatures::NO_COMMON_LIGATURES,
-            FontVariants::NO_COMMON_LIGATURES,
-        ),
-        (
-            FontVariantLigatures::DISCRETIONARY_LIGATURES,
+            L::DISCRETIONARY_LIGATURES,
             FontVariants::DISCRETIONARY_LIGATURES,
         ),
         (
-            FontVariantLigatures::NO_DISCRETIONARY_LIGATURES,
+            L::NO_DISCRETIONARY_LIGATURES,
             FontVariants::NO_DISCRETIONARY_LIGATURES,
         ),
+        (L::HISTORICAL_LIGATURES, FontVariants::HISTORICAL_LIGATURES),
         (
-            FontVariantLigatures::HISTORICAL_LIGATURES,
-            FontVariants::HISTORICAL_LIGATURES,
-        ),
-        (
-            FontVariantLigatures::NO_HISTORICAL_LIGATURES,
+            L::NO_HISTORICAL_LIGATURES,
             FontVariants::NO_HISTORICAL_LIGATURES,
         ),
-        (FontVariantLigatures::CONTEXTUAL, FontVariants::CONTEXTUAL),
-        (
-            FontVariantLigatures::NO_CONTEXTUAL,
-            FontVariants::NO_CONTEXTUAL,
-        ),
+        (L::CONTEXTUAL, FontVariants::CONTEXTUAL),
+        (L::NO_CONTEXTUAL, FontVariants::NO_CONTEXTUAL),
     ] {
         add(ligatures.contains(bit), keyword);
     }
-    let numeric = computed.slow_clone_font_variant_numeric();
+    let numeric = style.font_variant_numeric();
     for (bit, keyword) in [
-        (FontVariantNumeric::LINING_NUMS, FontVariants::LINING_NUMS),
-        (
-            FontVariantNumeric::OLDSTYLE_NUMS,
-            FontVariants::OLDSTYLE_NUMS,
-        ),
-        (
-            FontVariantNumeric::PROPORTIONAL_NUMS,
-            FontVariants::PROPORTIONAL_NUMS,
-        ),
-        (FontVariantNumeric::TABULAR_NUMS, FontVariants::TABULAR_NUMS),
-        (
-            FontVariantNumeric::DIAGONAL_FRACTIONS,
-            FontVariants::DIAGONAL_FRACTIONS,
-        ),
-        (
-            FontVariantNumeric::STACKED_FRACTIONS,
-            FontVariants::STACKED_FRACTIONS,
-        ),
-        (FontVariantNumeric::ORDINAL, FontVariants::ORDINAL),
-        (FontVariantNumeric::SLASHED_ZERO, FontVariants::SLASHED_ZERO),
+        (N::LINING_NUMS, FontVariants::LINING_NUMS),
+        (N::OLDSTYLE_NUMS, FontVariants::OLDSTYLE_NUMS),
+        (N::PROPORTIONAL_NUMS, FontVariants::PROPORTIONAL_NUMS),
+        (N::TABULAR_NUMS, FontVariants::TABULAR_NUMS),
+        (N::DIAGONAL_FRACTIONS, FontVariants::DIAGONAL_FRACTIONS),
+        (N::STACKED_FRACTIONS, FontVariants::STACKED_FRACTIONS),
+        (N::ORDINAL, FontVariants::ORDINAL),
+        (N::SLASHED_ZERO, FontVariants::SLASHED_ZERO),
     ] {
         add(numeric.contains(bit), keyword);
     }
-    let east_asian = computed.slow_clone_font_variant_east_asian();
+    let east_asian = style.font_variant_east_asian();
     for (bit, keyword) in [
-        (FontVariantEastAsian::JIS78, FontVariants::JIS78),
-        (FontVariantEastAsian::JIS83, FontVariants::JIS83),
-        (FontVariantEastAsian::JIS90, FontVariants::JIS90),
-        (FontVariantEastAsian::JIS04, FontVariants::JIS04),
-        (FontVariantEastAsian::SIMPLIFIED, FontVariants::SIMPLIFIED),
-        (FontVariantEastAsian::TRADITIONAL, FontVariants::TRADITIONAL),
-        (FontVariantEastAsian::FULL_WIDTH, FontVariants::FULL_WIDTH),
-        (
-            FontVariantEastAsian::PROPORTIONAL_WIDTH,
-            FontVariants::PROPORTIONAL_WIDTH,
-        ),
-        (FontVariantEastAsian::RUBY, FontVariants::RUBY),
+        (E::JIS78, FontVariants::JIS78),
+        (E::JIS83, FontVariants::JIS83),
+        (E::JIS90, FontVariants::JIS90),
+        (E::JIS04, FontVariants::JIS04),
+        (E::SIMPLIFIED, FontVariants::SIMPLIFIED),
+        (E::TRADITIONAL, FontVariants::TRADITIONAL),
+        (E::FULL_WIDTH, FontVariants::FULL_WIDTH),
+        (E::PROPORTIONAL_WIDTH, FontVariants::PROPORTIONAL_WIDTH),
+        (E::RUBY, FontVariants::RUBY),
     ] {
         add(east_asian.contains(bit), keyword);
     }
-    // The other alternates name `@font-feature-values`, and are features
-    // of the font lists.
-    let historical = computed
-        .slow_clone_font_variant_alternates()
-        .iter()
-        .any(|alternate| matches!(alternate, VariantAlternates::HistoricalForms));
+    // The other alternates name `@font-feature-values`, and are features of the font lists.
+    let historical = style
+        .font_variant_alternates()
+        .any(|alternate| matches!(alternate, css::VariantAlternate::HistoricalForms));
     add(historical, FontVariants::HISTORICAL_FORMS);
     set
 }
 
-fn text_group(computed: &ComputedValues, scale: f32, language: Option<Language>) -> TextGroup<'_> {
-    let text = computed.get_inherited_text();
-    let transform = computed.slow_clone_text_transform();
-    let emphasis = emphasis(computed, language.as_ref());
+fn text_group<S: TextStyle>(style: &S, scale: f32, language: Option<Language>) -> TextGroup<'_> {
+    let transform = style.text_transform();
+    let emphasis = emphasis(style, language.as_ref());
     TextGroup {
         language,
-        hyphenate_character: match &text.hyphenate_character {
-            HyphenateCharacter::Auto => None,
-            HyphenateCharacter::String(string) => Some(&**string),
+        hyphenate_character: style.hyphenate_character(),
+        white_space_collapse: match style.white_space_collapse() {
+            css::WhiteSpaceCollapse::Collapse => WhiteSpaceCollapse::Collapse,
+            css::WhiteSpaceCollapse::Preserve => WhiteSpaceCollapse::Preserve,
+            css::WhiteSpaceCollapse::PreserveBreaks => WhiteSpaceCollapse::PreserveBreaks,
+            css::WhiteSpaceCollapse::BreakSpaces => WhiteSpaceCollapse::BreakSpaces,
+            css::WhiteSpaceCollapse::PreserveSpaces => WhiteSpaceCollapse::PreserveSpaces,
         },
-        white_space_collapse: match text.white_space_collapse {
-            StyloWhiteSpace::Collapse => WhiteSpaceCollapse::Collapse,
-            StyloWhiteSpace::Preserve => WhiteSpaceCollapse::Preserve,
-            StyloWhiteSpace::PreserveBreaks => WhiteSpaceCollapse::PreserveBreaks,
-            StyloWhiteSpace::BreakSpaces => WhiteSpaceCollapse::BreakSpaces,
-            StyloWhiteSpace::PreserveSpaces => WhiteSpaceCollapse::PreserveSpaces,
-        },
-        wrap_mode: match text.text_wrap_mode {
-            StyloTextWrapMode::Wrap => TextWrapMode::Wrap,
-            StyloTextWrapMode::Nowrap => TextWrapMode::NoWrap,
+        wrap_mode: match style.text_wrap_mode() {
+            css::TextWrapMode::Wrap => TextWrapMode::Wrap,
+            css::TextWrapMode::NoWrap => TextWrapMode::NoWrap,
         },
         // math-auto excludes the other transforms.
-        transform: if transform.contains(StyloTextTransform::MATH_AUTO) {
+        transform: if transform.contains(css::TextTransform::MATH_AUTO) {
             TextTransform::MATH_AUTO
         } else {
             TextTransform {
-                case: if transform.contains(StyloTextTransform::UPPERCASE) {
+                case: if transform.contains(css::TextTransform::UPPERCASE) {
                     TextCase::Uppercase
-                } else if transform.contains(StyloTextTransform::LOWERCASE) {
+                } else if transform.contains(css::TextTransform::LOWERCASE) {
                     TextCase::Lowercase
-                } else if transform.contains(StyloTextTransform::CAPITALIZE) {
+                } else if transform.contains(css::TextTransform::CAPITALIZE) {
                     TextCase::Capitalize
                 } else {
                     TextCase::None
                 },
-                full_width: transform.contains(StyloTextTransform::FULL_WIDTH),
-                full_size_kana: transform.contains(StyloTextTransform::FULL_SIZE_KANA),
+                full_width: transform.contains(css::TextTransform::FULL_WIDTH),
+                full_size_kana: transform.contains(css::TextTransform::FULL_SIZE_KANA),
             }
         },
-        security: match text._webkit_text_security {
-            StyloTextSecurity::None => winkin::style::TextSecurity::None,
-            StyloTextSecurity::Disc => winkin::style::TextSecurity::Disc,
-            StyloTextSecurity::Circle => winkin::style::TextSecurity::Circle,
-            StyloTextSecurity::Square => winkin::style::TextSecurity::Square,
+        security: match style.text_security() {
+            css::TextSecurity::None => winkin::style::TextSecurity::None,
+            css::TextSecurity::Disc => winkin::style::TextSecurity::Disc,
+            css::TextSecurity::Circle => winkin::style::TextSecurity::Circle,
+            css::TextSecurity::Square => winkin::style::TextSecurity::Square,
         },
-        word_break: match text.word_break {
-            style::values::computed::WordBreak::Normal => WordBreak::Normal,
-            style::values::computed::WordBreak::BreakAll => WordBreak::BreakAll,
-            style::values::computed::WordBreak::KeepAll => WordBreak::KeepAll,
-            style::values::computed::WordBreak::BreakWord => WordBreak::Normal,
+        word_break: match style.word_break() {
+            css::WordBreak::Normal | css::WordBreak::BreakWord => WordBreak::Normal,
+            css::WordBreak::BreakAll => WordBreak::BreakAll,
+            css::WordBreak::KeepAll => WordBreak::KeepAll,
         },
-        line_break: match computed.slow_clone_line_break() {
-            style::values::computed::LineBreak::Auto
-            | style::values::computed::LineBreak::Normal => LineBreak::Normal,
-            style::values::computed::LineBreak::Loose => LineBreak::Loose,
-            style::values::computed::LineBreak::Strict => LineBreak::Strict,
-            style::values::computed::LineBreak::Anywhere => LineBreak::Anywhere,
+        line_break: match style.line_break() {
+            css::LineBreak::Auto | css::LineBreak::Normal => LineBreak::Normal,
+            css::LineBreak::Loose => LineBreak::Loose,
+            css::LineBreak::Strict => LineBreak::Strict,
+            css::LineBreak::Anywhere => LineBreak::Anywhere,
         },
         // `word-break: break-word` is `word-break: normal` with `overflow-wrap: anywhere`.
-        overflow_wrap: match (text.word_break, text.overflow_wrap) {
-            (style::values::computed::WordBreak::BreakWord, _) => OverflowWrap::Anywhere,
-            (_, style::values::computed::OverflowWrap::Normal) => OverflowWrap::Normal,
-            (_, style::values::computed::OverflowWrap::BreakWord) => OverflowWrap::BreakWord,
-            (_, style::values::computed::OverflowWrap::Anywhere) => OverflowWrap::Anywhere,
+        overflow_wrap: match (style.word_break(), style.overflow_wrap()) {
+            (css::WordBreak::BreakWord, _) => OverflowWrap::Anywhere,
+            (_, css::OverflowWrap::Normal) => OverflowWrap::Normal,
+            (_, css::OverflowWrap::BreakWord) => OverflowWrap::BreakWord,
+            (_, css::OverflowWrap::Anywhere) => OverflowWrap::Anywhere,
         },
-        hyphens: match computed.slow_clone_hyphens() {
-            StyloHyphens::None => Hyphens::None,
-            StyloHyphens::Manual => Hyphens::Manual,
-            StyloHyphens::Auto => Hyphens::Auto,
+        hyphens: match style.hyphens() {
+            css::Hyphens::None => Hyphens::None,
+            css::Hyphens::Manual => Hyphens::Manual,
+            css::Hyphens::Auto => Hyphens::Auto,
         },
-        tab_size: match text.tab_size {
-            StyloLengthOrNumber::Number(spaces) => TabSize::Spaces(spaces.0),
-            StyloLengthOrNumber::Length(length) => TabSize::Px(length.0.px() * scale),
+        tab_size: match style.tab_size() {
+            css::TabSize::Spaces(spaces) => TabSize::Spaces(spaces),
+            css::TabSize::Length(length) => TabSize::Px(length * scale),
         },
         // A percentage is of the font size, which layout takes it of.
-        letter_spacing: length_percentage(&text.letter_spacing.0, scale),
+        letter_spacing: length_percentage(style.letter_spacing(), scale),
         // A percentage is of the font size, which layout takes it of.
-        word_spacing: length_percentage(&text.word_spacing, scale),
+        word_spacing: length_percentage(style.word_spacing(), scale),
         autospace: {
-            let autospace = computed.slow_clone_text_autospace();
-            if autospace.intersects(StyloTextAutospace::NORMAL | StyloTextAutospace::AUTO) {
+            let autospace = style.text_autospace();
+            if autospace.intersects(css::TextAutospace::NORMAL | css::TextAutospace::AUTO) {
                 TextAutospace::NORMAL
             } else {
                 TextAutospace {
-                    ideograph_alpha: autospace.contains(StyloTextAutospace::IDEOGRAPH_ALPHA),
-                    ideograph_numeric: autospace.contains(StyloTextAutospace::IDEOGRAPH_NUMERIC),
+                    ideograph_alpha: autospace.contains(css::TextAutospace::IDEOGRAPH_ALPHA),
+                    ideograph_numeric: autospace.contains(css::TextAutospace::IDEOGRAPH_NUMERIC),
                 }
             }
         },
-        justify: match text.text_justify {
-            StyloTextJustify::Auto => TextJustify::Auto,
-            StyloTextJustify::None => TextJustify::None,
-            StyloTextJustify::InterWord => TextJustify::InterWord,
-            StyloTextJustify::InterCharacter => TextJustify::InterCharacter,
+        justify: match style.text_justify() {
+            css::TextJustify::Auto => TextJustify::Auto,
+            css::TextJustify::None => TextJustify::None,
+            css::TextJustify::InterWord => TextJustify::InterWord,
+            css::TextJustify::InterCharacter => TextJustify::InterCharacter,
         },
-        spacing_trim: match computed.slow_clone_text_spacing_trim() {
-            StyloTextSpacingTrim::Normal => TextSpacingTrim::Normal,
-            StyloTextSpacingTrim::SpaceAll => TextSpacingTrim::SpaceAll,
-            StyloTextSpacingTrim::SpaceFirst => TextSpacingTrim::SpaceFirst,
-            StyloTextSpacingTrim::TrimStart => TextSpacingTrim::TrimStart,
+        spacing_trim: match style.text_spacing_trim() {
+            css::TextSpacingTrim::Normal => TextSpacingTrim::Normal,
+            css::TextSpacingTrim::SpaceAll => TextSpacingTrim::SpaceAll,
+            css::TextSpacingTrim::SpaceFirst => TextSpacingTrim::SpaceFirst,
+            css::TextSpacingTrim::TrimStart => TextSpacingTrim::TrimStart,
         },
         hanging_punctuation: {
-            let hanging = computed.slow_clone_hanging_punctuation();
+            let hanging = style.hanging_punctuation();
             HangingPunctuation {
-                first: hanging.contains(StyloHangingPunctuation::FIRST),
-                last: hanging.contains(StyloHangingPunctuation::LAST),
-                end: if hanging.contains(StyloHangingPunctuation::FORCE_END) {
+                first: hanging.contains(css::HangingPunctuation::FIRST),
+                last: hanging.contains(css::HangingPunctuation::LAST),
+                end: if hanging.contains(css::HangingPunctuation::FORCE_END) {
                     HangEnd::Force
-                } else if hanging.contains(StyloHangingPunctuation::ALLOW_END) {
+                } else if hanging.contains(css::HangingPunctuation::ALLOW_END) {
                     HangEnd::Allow
                 } else {
                     HangEnd::None
@@ -787,45 +549,25 @@ fn text_group(computed: &ComputedValues, scale: f32, language: Option<Language>)
             }
         },
         emphasis,
-        decoration_skip_spaces: decoration_skip_spaces(
-            computed.slow_clone_text_decoration_skip_spaces(),
-        ),
         ..TextGroup::INITIAL
     }
 }
 
-/// `text-decoration-skip-spaces`, whose `all` holds both edges.
-fn decoration_skip_spaces(skip: StyloTextDecorationSkipSpaces) -> TextDecorationSkipSpaces {
-    if skip.contains(StyloTextDecorationSkipSpaces::ALL) {
-        return TextDecorationSkipSpaces::All;
-    }
-    match (
-        skip.contains(StyloTextDecorationSkipSpaces::START),
-        skip.contains(StyloTextDecorationSkipSpaces::END),
-    ) {
-        (true, true) => TextDecorationSkipSpaces::StartEnd,
-        (true, false) => TextDecorationSkipSpaces::Start,
-        (false, true) => TextDecorationSkipSpaces::End,
-        (false, false) => TextDecorationSkipSpaces::None,
-    }
-}
-
-/// The string `text-emphasis-style` marks text with, where it marks it:
-/// a string's first character, or a keyword's character.
-pub(crate) fn emphasis_mark_string(computed: &ComputedValues) -> Option<String> {
-    use style::values::specified::text::{TextEmphasisFillMode, TextEmphasisShapeKeyword};
-    match computed.get_inherited_text().text_emphasis_style {
-        StyloTextEmphasisStyle::None => None,
-        StyloTextEmphasisStyle::String(ref string) => string.chars().next().map(String::from),
-        StyloTextEmphasisStyle::Keyword { fill, shape } => {
+/// The string `text-emphasis-style` marks text with, where it marks it: a string's first
+/// character, or a keyword's character.
+pub(crate) fn emphasis_mark_string(style: &impl TextStyle) -> Option<String> {
+    match style.text_emphasis_style() {
+        css::TextEmphasisStyle::None => None,
+        css::TextEmphasisStyle::String(string) => string.chars().next().map(String::from),
+        css::TextEmphasisStyle::Keyword { fill, shape } => {
             let (filled, open) = match shape {
-                TextEmphasisShapeKeyword::Dot => ('\u{2022}', '\u{25E6}'),
-                TextEmphasisShapeKeyword::Circle => ('\u{25CF}', '\u{25CB}'),
-                TextEmphasisShapeKeyword::DoubleCircle => ('\u{25C9}', '\u{25CE}'),
-                TextEmphasisShapeKeyword::Triangle => ('\u{25B2}', '\u{25B3}'),
-                TextEmphasisShapeKeyword::Sesame => ('\u{FE45}', '\u{FE46}'),
+                css::EmphasisShape::Dot => ('\u{2022}', '\u{25E6}'),
+                css::EmphasisShape::Circle => ('\u{25CF}', '\u{25CB}'),
+                css::EmphasisShape::DoubleCircle => ('\u{25C9}', '\u{25CE}'),
+                css::EmphasisShape::Triangle => ('\u{25B2}', '\u{25B3}'),
+                css::EmphasisShape::Sesame => ('\u{FE45}', '\u{FE46}'),
             };
-            Some(String::from(if fill == TextEmphasisFillMode::Open {
+            Some(String::from(if fill == css::EmphasisFill::Open {
                 open
             } else {
                 filled
@@ -834,21 +576,17 @@ pub(crate) fn emphasis_mark_string(computed: &ComputedValues) -> Option<String> 
     }
 }
 
-/// `text-emphasis` as far as layout reads it: whether marks are set, and on
-/// which side. `auto` is `under right` where the content `language` is
-/// Chinese and `over right` otherwise, as CSS Text Decoration 4 and Chrome
-/// have it.
-fn emphasis(computed: &ComputedValues, language: Option<&Language>) -> TextEmphasis {
-    let marks = !matches!(
-        computed.slow_clone_text_emphasis_style(),
-        StyloTextEmphasisStyle::None
-    );
-    let position = computed.slow_clone_text_emphasis_position();
+/// `text-emphasis` as far as layout reads it: whether marks are set, and on which side. `auto` is
+/// `under right` where the content `language` is Chinese and `over right` otherwise, as CSS Text
+/// Decoration 4 and Chrome have it.
+fn emphasis(style: &impl TextStyle, language: Option<&Language>) -> TextEmphasis {
+    let marks = !matches!(style.text_emphasis_style(), css::TextEmphasisStyle::None);
+    let position = style.text_emphasis_position();
     TextEmphasis {
         marks,
         position: EmphasisPosition {
-            side: if position.contains(StyloTextEmphasisPosition::UNDER)
-                || (position.contains(StyloTextEmphasisPosition::AUTO)
+            side: if position.contains(css::TextEmphasisPosition::UNDER)
+                || (position.contains(css::TextEmphasisPosition::AUTO)
                     && language
                         .is_some_and(|language| language.language().eq_ignore_ascii_case("zh")))
             {
@@ -856,7 +594,7 @@ fn emphasis(computed: &ComputedValues, language: Option<&Language>) -> TextEmpha
             } else {
                 EmphasisSide::Over
             },
-            vertical_side: if position.contains(StyloTextEmphasisPosition::LEFT) {
+            vertical_side: if position.contains(css::TextEmphasisPosition::LEFT) {
                 EmphasisVerticalSide::Left
             } else {
                 EmphasisVerticalSide::Right
@@ -866,32 +604,34 @@ fn emphasis(computed: &ComputedValues, language: Option<&Language>) -> TextEmpha
     }
 }
 
-fn line_group(computed: &ComputedValues, scale: f32) -> LineGroup {
-    let font = computed.get_font();
-    let initial_letter = computed.slow_clone_initial_letter();
+fn line_group(style: &impl TextStyle, scale: f32) -> LineGroup {
+    let initial_letter = style.initial_letter();
     LineGroup {
-        height: match font.line_height {
-            StyloLineHeight::Normal => LineHeight::Normal,
-            StyloLineHeight::Number(number) => LineHeight::Factor(number.0),
-            StyloLineHeight::Length(length) => LineHeight::Px(length.0.px() * scale),
+        height: match style.line_height() {
+            css::LineHeight::Normal => LineHeight::Normal,
+            css::LineHeight::Number(number) => LineHeight::Factor(number),
+            css::LineHeight::Length(length) => LineHeight::Px(length * scale),
         },
-        vertical_align: vertical_align(computed, scale),
-        dominant_baseline: match computed.slow_clone_dominant_baseline() {
-            StyloDominantBaseline::Alphabetic => DominantBaseline::Alphabetic,
-            StyloDominantBaseline::Ideographic => DominantBaseline::Ideographic,
-            StyloDominantBaseline::Central | StyloDominantBaseline::Middle => {
+        vertical_align: vertical_align(style, scale),
+        dominant_baseline: match style.dominant_baseline() {
+            css::DominantBaseline::Alphabetic => DominantBaseline::Alphabetic,
+            css::DominantBaseline::Ideographic => DominantBaseline::Ideographic,
+            css::DominantBaseline::Central | css::DominantBaseline::Middle => {
                 DominantBaseline::Central
             }
-            StyloDominantBaseline::Mathematical => DominantBaseline::Mathematical,
-            _ => DominantBaseline::Auto,
+            css::DominantBaseline::Mathematical => DominantBaseline::Mathematical,
+            css::DominantBaseline::Auto
+            | css::DominantBaseline::Hanging
+            | css::DominantBaseline::TextTop
+            | css::DominantBaseline::TextBottom => DominantBaseline::Auto,
         },
         // A sink left out, or `drop`, is the size, floored; `raise` is 1.
         initial_letter: if initial_letter.size > 0.0 {
             InitialLetter {
                 size: initial_letter.size,
                 sink: match initial_letter.sink {
-                    StyloInitialLetterSink::Integer(sink) if sink > 0 => sink as u32,
-                    StyloInitialLetterSink::Raise => 1,
+                    css::InitialLetterSink::Lines(sink) if sink > 0 => sink as u32,
+                    css::InitialLetterSink::Raise => 1,
                     _ => (initial_letter.size.floor() as u32).max(1),
                 },
                 align: InitialLetterAlign::Alphabetic,
@@ -899,40 +639,37 @@ fn line_group(computed: &ComputedValues, scale: f32) -> LineGroup {
         } else {
             InitialLetter::NONE
         },
-        text_box_trim: text_box_trim(computed.slow_clone_text_box_trim()),
-        text_box_edge: text_box_edge(computed.slow_clone_text_box_edge()),
+        text_box_trim: text_box_trim(style.text_box_trim()),
+        text_box_edge: text_box_edge(style.text_box_edge()),
         ..LineGroup::INITIAL
     }
 }
 
-fn text_box_trim(trim: StyloTextBoxTrim) -> TextBoxTrim {
-    match (
-        trim.contains(StyloTextBoxTrim::TRIM_START),
-        trim.contains(StyloTextBoxTrim::TRIM_END),
-    ) {
-        (true, true) => TextBoxTrim::TrimBoth,
-        (true, false) => TextBoxTrim::TrimStart,
-        (false, true) => TextBoxTrim::TrimEnd,
-        (false, false) => TextBoxTrim::None,
+fn text_box_trim(trim: css::TextBoxTrim) -> TextBoxTrim {
+    match trim {
+        css::TextBoxTrim::TrimBoth => TextBoxTrim::TrimBoth,
+        css::TextBoxTrim::TrimStart => TextBoxTrim::TrimStart,
+        css::TextBoxTrim::TrimEnd => TextBoxTrim::TrimEnd,
+        css::TextBoxTrim::None => TextBoxTrim::None,
     }
 }
 
-fn text_box_edge(edge: StyloTextBoxEdge) -> TextBoxEdge {
+fn text_box_edge(edge: css::TextBoxEdge) -> TextBoxEdge {
     match edge {
-        StyloTextBoxEdge::Auto => TextBoxEdge::AUTO,
-        StyloTextBoxEdge::TextEdge(edge) => TextBoxEdge {
-            over: match edge.over {
-                TextEdgeKeyword::Cap => TextEdgeOver::Cap,
-                TextEdgeKeyword::Ex => TextEdgeOver::Ex,
-                TextEdgeKeyword::Ideographic => TextEdgeOver::Ideographic,
-                TextEdgeKeyword::IdeographicInk => TextEdgeOver::IdeographicInk,
-                _ => TextEdgeOver::Text,
+        css::TextBoxEdge::Auto => TextBoxEdge::AUTO,
+        css::TextBoxEdge::Edges { over, under } => TextBoxEdge {
+            over: match over {
+                css::TextEdge::Cap => TextEdgeOver::Cap,
+                css::TextEdge::Ex => TextEdgeOver::Ex,
+                css::TextEdge::Ideographic => TextEdgeOver::Ideographic,
+                css::TextEdge::IdeographicInk => TextEdgeOver::IdeographicInk,
+                css::TextEdge::Text | css::TextEdge::Alphabetic => TextEdgeOver::Text,
             },
-            under: match edge.under {
-                TextEdgeKeyword::Alphabetic => TextEdgeUnder::Alphabetic,
-                TextEdgeKeyword::Ideographic => TextEdgeUnder::Ideographic,
-                TextEdgeKeyword::IdeographicInk => TextEdgeUnder::IdeographicInk,
-                _ => TextEdgeUnder::Text,
+            under: match under {
+                css::TextEdge::Alphabetic => TextEdgeUnder::Alphabetic,
+                css::TextEdge::Ideographic => TextEdgeUnder::Ideographic,
+                css::TextEdge::IdeographicInk => TextEdgeUnder::IdeographicInk,
+                css::TextEdge::Text | css::TextEdge::Cap | css::TextEdge::Ex => TextEdgeUnder::Text,
             },
         },
     }
@@ -940,18 +677,19 @@ fn text_box_edge(edge: StyloTextBoxEdge) -> TextBoxEdge {
 
 /// Margin, border and padding, and `box-decoration-break`.
 ///
-/// A border width is snapped as CSS snaps it, in device pixels: one under a
-/// pixel to a pixel, and any other down to a whole one.
-fn edges_group(computed: &ComputedValues, scale: f32) -> EdgesGroup {
-    let margin = computed.get_margin();
-    let padding = computed.get_padding();
-    let border = computed.get_border();
-    let margin_side = |value: &GenericMargin<StyloLengthPercentage>| match value {
-        GenericMargin::LengthPercentage(length) => length_percentage(length, scale),
-        _ => LengthPercentage::default(),
+/// A border width is snapped as CSS snaps it, in device pixels: one under a pixel to a pixel,
+/// and any other down to a whole one.
+fn edges_group(style: &impl TextStyle, scale: f32) -> EdgesGroup {
+    let margin = style.margin();
+    let padding = style.padding();
+    let widths = style.border_widths();
+    let styles = style.border_styles();
+    let margin_side = |value: css::LengthPercentageOrAuto| match value {
+        css::LengthPercentageOrAuto::LengthPercentage(length) => length_percentage(length, scale),
+        css::LengthPercentageOrAuto::Auto => LengthPercentage::default(),
     };
-    let border_side = |width: &BorderSideWidth, style: BorderStyle| {
-        let width = width.0.to_f32_px() * scale;
+    let border_side = |width: f32, style: css::BorderStyle| {
+        let width = width * scale;
         if style.none_or_hidden() || width <= 0.0 {
             0.0
         } else {
@@ -960,125 +698,105 @@ fn edges_group(computed: &ComputedValues, scale: f32) -> EdgesGroup {
     };
     EdgesGroup {
         margin: Sides {
-            top: margin_side(&margin.margin_top),
-            right: margin_side(&margin.margin_right),
-            bottom: margin_side(&margin.margin_bottom),
-            left: margin_side(&margin.margin_left),
+            top: margin_side(margin.top),
+            right: margin_side(margin.right),
+            bottom: margin_side(margin.bottom),
+            left: margin_side(margin.left),
         },
         border: Sides {
-            top: border_side(&border.border_top_width, border.border_top_style),
-            right: border_side(&border.border_right_width, border.border_right_style),
-            bottom: border_side(&border.border_bottom_width, border.border_bottom_style),
-            left: border_side(&border.border_left_width, border.border_left_style),
+            top: border_side(widths.top, styles.top),
+            right: border_side(widths.right, styles.right),
+            bottom: border_side(widths.bottom, styles.bottom),
+            left: border_side(widths.left, styles.left),
         },
         padding: Sides {
-            top: length_percentage(&padding.padding_top.0, scale),
-            right: length_percentage(&padding.padding_right.0, scale),
-            bottom: length_percentage(&padding.padding_bottom.0, scale),
-            left: length_percentage(&padding.padding_left.0, scale),
+            top: length_percentage(padding.top, scale),
+            right: length_percentage(padding.right, scale),
+            bottom: length_percentage(padding.bottom, scale),
+            left: length_percentage(padding.left, scale),
         },
-        decoration_break: match computed.slow_clone_box_decoration_break() {
-            StyloBoxDecorationBreak::Slice => BoxDecorationBreak::Slice,
-            StyloBoxDecorationBreak::Clone => BoxDecorationBreak::Clone,
+        decoration_break: match style.box_decoration_break() {
+            css::BoxDecorationBreak::Slice => BoxDecorationBreak::Slice,
+            css::BoxDecorationBreak::Clone => BoxDecorationBreak::Clone,
         },
     }
 }
 
-/// `vertical-align`, which Stylo keeps as its two longhands.
-fn vertical_align(computed: &ComputedValues, scale: f32) -> VerticalAlign {
-    match computed.slow_clone_baseline_shift() {
-        GenericBaselineShift::Keyword(BaselineShiftKeyword::Sub) => return VerticalAlign::Sub,
-        GenericBaselineShift::Keyword(BaselineShiftKeyword::Super) => return VerticalAlign::Super,
-        GenericBaselineShift::Keyword(BaselineShiftKeyword::Top) => return VerticalAlign::Top,
-        GenericBaselineShift::Keyword(BaselineShiftKeyword::Bottom) => {
-            return VerticalAlign::Bottom;
+/// `vertical-align`, which CSS Inline 3 splits into `alignment-baseline` and `baseline-shift`.
+fn vertical_align(style: &impl TextStyle, scale: f32) -> VerticalAlign {
+    match style.baseline_shift() {
+        css::BaselineShift::Sub => return VerticalAlign::Sub,
+        css::BaselineShift::Super => return VerticalAlign::Super,
+        css::BaselineShift::Top => return VerticalAlign::Top,
+        css::BaselineShift::Bottom => return VerticalAlign::Bottom,
+        css::BaselineShift::Center => return VerticalAlign::Middle,
+        css::BaselineShift::Length(css::LengthPercentage::Length(length)) if length != 0.0 => {
+            return VerticalAlign::Px(length * scale);
         }
-        GenericBaselineShift::Keyword(BaselineShiftKeyword::Center) => {
-            return VerticalAlign::Middle;
+        css::BaselineShift::Length(css::LengthPercentage::Percentage(percentage))
+            if percentage != 0.0 =>
+        {
+            return VerticalAlign::Fraction(percentage);
         }
-        GenericBaselineShift::Length(shift) => match shift.unpack() {
-            Unpacked::Length(length) if length.px() != 0.0 => {
-                return VerticalAlign::Px(length.px() * scale);
-            }
-            Unpacked::Percentage(percentage) if percentage.0 != 0.0 => {
-                return VerticalAlign::Fraction(percentage.0);
-            }
-            _ => {}
-        },
+        css::BaselineShift::Length(_) => {}
     }
-    #[allow(unreachable_patterns)]
-    match computed.slow_clone_alignment_baseline() {
-        AlignmentBaseline::TextTop => VerticalAlign::TextTop,
-        AlignmentBaseline::TextBottom => VerticalAlign::TextBottom,
-        AlignmentBaseline::Middle => VerticalAlign::Middle,
-        _ => VerticalAlign::Baseline,
+    match style.alignment_baseline() {
+        css::AlignmentBaseline::TextTop => VerticalAlign::TextTop,
+        css::AlignmentBaseline::TextBottom => VerticalAlign::TextBottom,
+        css::AlignmentBaseline::Middle => VerticalAlign::Middle,
+        css::AlignmentBaseline::Baseline => VerticalAlign::Baseline,
     }
 }
 
-/// Which way the block's lines run. The vendored Stylo computes the
-/// sideways modes and `text-orientation`.
-///
-/// `is_sideways` is not the question here: it also answers yes to
-/// `text-orientation: sideways`, which turns the glyphs of a vertical block
-/// without changing which way its lines run. Only the writing mode's own
-/// sideways values reverse the lines, and that is `VERTICAL_SIDEWAYS`.
-pub(crate) fn writing_mode(computed: &ComputedValues) -> WritingMode {
-    let mode = computed.writing_mode;
-    if mode.intersects(StyloWritingMode::VERTICAL_SIDEWAYS) {
-        if mode.is_vertical_lr() {
-            WritingMode::SidewaysLr
-        } else {
-            WritingMode::SidewaysRl
-        }
-    } else if mode.is_vertical_lr() {
-        WritingMode::VerticalLr
-    } else if mode.is_vertical() {
-        WritingMode::VerticalRl
-    } else {
-        WritingMode::HorizontalTb
+/// Which way the block's lines run.
+pub(crate) fn writing_mode(style: &impl TextStyle) -> WritingMode {
+    match style.writing_mode() {
+        css::WritingMode::HorizontalTb => WritingMode::HorizontalTb,
+        css::WritingMode::VerticalRl => WritingMode::VerticalRl,
+        css::WritingMode::VerticalLr => WritingMode::VerticalLr,
+        css::WritingMode::SidewaysRl => WritingMode::SidewaysRl,
+        css::WritingMode::SidewaysLr => WritingMode::SidewaysLr,
     }
 }
 
-/// The block's `text-align` and `text-align-last`, read from `computed`.
-pub(crate) fn text_align(computed: &ComputedValues) -> (TextAlign, TextAlignLast) {
-    let align = match computed.slow_clone_text_align() {
-        TextAlignKeyword::Start => TextAlign::Start,
-        TextAlignKeyword::End => TextAlign::End,
-        TextAlignKeyword::Left | TextAlignKeyword::MozLeft => TextAlign::Left,
-        TextAlignKeyword::Right | TextAlignKeyword::MozRight => TextAlign::Right,
-        TextAlignKeyword::Center | TextAlignKeyword::MozCenter => TextAlign::Center,
-        TextAlignKeyword::Justify => TextAlign::Justify,
+/// The block's `text-align` and `text-align-last`.
+pub(crate) fn text_align(style: &impl TextStyle) -> (TextAlign, TextAlignLast) {
+    let align = match style.text_align() {
+        css::TextAlign::Start => TextAlign::Start,
+        css::TextAlign::End => TextAlign::End,
+        css::TextAlign::Left => TextAlign::Left,
+        css::TextAlign::Right => TextAlign::Right,
+        css::TextAlign::Center => TextAlign::Center,
+        css::TextAlign::Justify => TextAlign::Justify,
     };
-    let last = match computed.get_inherited_text().text_align_last {
-        StyloTextAlignLast::Auto => TextAlignLast::Auto,
-        StyloTextAlignLast::Start => TextAlignLast::Start,
-        StyloTextAlignLast::End => TextAlignLast::End,
-        StyloTextAlignLast::Left => TextAlignLast::Left,
-        StyloTextAlignLast::Right => TextAlignLast::Right,
-        StyloTextAlignLast::Center => TextAlignLast::Center,
-        StyloTextAlignLast::Justify => TextAlignLast::Justify,
+    let last = match style.text_align_last() {
+        css::TextAlignLast::Auto => TextAlignLast::Auto,
+        css::TextAlignLast::Start => TextAlignLast::Start,
+        css::TextAlignLast::End => TextAlignLast::End,
+        css::TextAlignLast::Left => TextAlignLast::Left,
+        css::TextAlignLast::Right => TextAlignLast::Right,
+        css::TextAlignLast::Center => TextAlignLast::Center,
+        css::TextAlignLast::Justify => TextAlignLast::Justify,
     };
     (align, last)
 }
 
-/// The block's styling: its own style and its `::first-line` style, and the
-/// properties with one value per block container, read from `computed`.
+/// The block's styling: its own style and its `::first-line` style, and the properties with one
+/// value per block container, read from `block`.
 ///
-/// `container` is the box whose overflow decides whether `text-overflow`
-/// applies, which is the block itself or, for an anonymous block, the box
-/// around it.
+/// `container` is the box whose overflow decides whether `text-overflow` applies, which is the
+/// block itself or, for an anonymous block, the box around it.
 pub(crate) fn block_style<'a>(
     style: &'a ComputedStyle<'a>,
     first_line: Option<&'a ComputedStyle<'a>>,
-    computed: &ComputedValues,
-    container: &ComputedValues,
+    block: &impl TextStyle,
+    container: &impl TextStyle,
     scale: f32,
 ) -> ComputedBlockStyle<'a> {
-    let text = computed.get_inherited_text();
-    let (text_align, text_align_last) = text_align(computed);
-    let indent = computed.slow_clone_text_indent();
-    // `plaintext` on the block takes each paragraph's direction from its own
-    // first strong character.
+    let (text_align, text_align_last) = text_align(block);
+    let indent = block.text_indent();
+    // `plaintext` on the block takes each paragraph's direction from its own first strong
+    // character.
     let direction = if style.bidi.unicode_bidi == UnicodeBidi::Plaintext {
         BaseDirection::Auto
     } else if style.bidi.direction == Direction::Rtl {
@@ -1087,119 +805,117 @@ pub(crate) fn block_style<'a>(
         BaseDirection::Ltr
     };
     // An ellipsis where the block clips what overflows it, as Chrome's
-    // `ShouldTruncateOverflowingText` asks. The end side's value, which is
-    // the only side a line overflows at: Stylo keeps it in `second` either
-    // way, a single value being the end with the start left at `clip`.
-    let clips = !matches!(
-        container.slow_clone_overflow_x(),
-        style::values::computed::Overflow::Visible
-    );
-    let text_overflow = match &computed.get_text().text_overflow.second {
-        StyloTextOverflowSide::Ellipsis | StyloTextOverflowSide::String(_) if clips => {
-            TextOverflow::Ellipsis
-        }
+    // `ShouldTruncateOverflowingText` asks: the end side's value, which is the only side a line
+    // overflows at.
+    let clips = container.overflow_x() != css::Overflow::Visible;
+    let text_overflow = match block.text_overflow() {
+        css::TextOverflow::Ellipsis | css::TextOverflow::String if clips => TextOverflow::Ellipsis,
         _ => TextOverflow::Clip,
     };
     ComputedBlockStyle {
         first_line,
         direction,
-        writing_mode: writing_mode(computed),
+        writing_mode: writing_mode(block),
         text_align,
         text_align_last,
         text_indent: TextIndent {
-            amount: length_percentage(&indent.length, scale),
+            amount: length_percentage(indent.length, scale),
             hanging: indent.hanging,
             each_line: indent.each_line,
         },
-        text_wrap_style: match computed.slow_clone_text_wrap_style() {
-            StyloTextWrapStyle::Auto => TextWrapStyle::Auto,
-            StyloTextWrapStyle::Stable => TextWrapStyle::Stable,
-            StyloTextWrapStyle::Balance => TextWrapStyle::Balance,
-            StyloTextWrapStyle::Pretty => TextWrapStyle::Pretty,
+        text_wrap_style: match block.text_wrap_style() {
+            css::TextWrapStyle::Auto => TextWrapStyle::Auto,
+            css::TextWrapStyle::Stable => TextWrapStyle::Stable,
+            css::TextWrapStyle::Balance => TextWrapStyle::Balance,
+            css::TextWrapStyle::Pretty => TextWrapStyle::Pretty,
         },
         text_overflow,
-        // `line-clamp`, or where it is `none`, `-webkit-line-clamp`, which
-        // Chrome applies to a `-webkit-box`; the box is not required here,
-        // Stylo's servo build having no `-webkit-box` to ask for.
-        line_clamp: {
-            let clamp = computed.slow_clone_line_clamp();
-            match clamp.max_lines.lines_value() {
-                Some(lines) => LineClamp::Lines(lines.0.max(0) as u32),
-                None if clamp.max_lines.is_auto() => LineClamp::Auto,
-                None => LineClamp::None,
-            }
+        // `line-clamp`, or where it is `none`, `-webkit-line-clamp`, which Chrome applies to a
+        // `-webkit-box`; the box is not required here.
+        line_clamp: match block.line_clamp() {
+            css::LineClamp::Lines(lines) => LineClamp::Lines(lines.max(0) as u32),
+            css::LineClamp::Auto => LineClamp::Auto,
+            css::LineClamp::None => LineClamp::None,
         },
-        text_box_trim: text_box_trim(computed.slow_clone_text_box_trim()),
-        text_box_edge: text_box_edge(computed.slow_clone_text_box_edge()),
-        text_fit: text_fit(&text.text_fit),
+        text_box_trim: text_box_trim(block.text_box_trim()),
+        text_box_edge: text_box_edge(block.text_box_edge()),
+        text_fit: text_fit(block.text_fit()),
         ..ComputedBlockStyle::new(style)
     }
 }
 
 /// `text-fit`, its limit as a fraction.
-fn text_fit(fit: &StyloTextFit) -> TextFit {
+fn text_fit(fit: css::TextFit) -> TextFit {
     TextFit {
         kind: match fit.kind {
-            StyloTextFitKind::None => TextFitKind::None,
-            StyloTextFitKind::Grow => TextFitKind::Grow,
-            StyloTextFitKind::Shrink => TextFitKind::Shrink,
+            css::TextFitKind::None => TextFitKind::None,
+            css::TextFitKind::Grow => TextFitKind::Grow,
+            css::TextFitKind::Shrink => TextFitKind::Shrink,
         },
         target: match fit.target {
-            StyloTextFitTarget::Consistent => TextFitTarget::Consistent,
-            StyloTextFitTarget::PerLine => TextFitTarget::PerLine,
-            StyloTextFitTarget::PerLineAll => TextFitTarget::PerLineAll,
+            css::TextFitTarget::Consistent => TextFitTarget::Consistent,
+            css::TextFitTarget::PerLine => TextFitTarget::PerLine,
+            css::TextFitTarget::PerLineAll => TextFitTarget::PerLineAll,
         },
-        limit: fit.limit.map(|limit| limit.0.0),
+        limit: fit.limit,
     }
 }
 
 /// `ruby-position`.
 ///
-/// `alternate` alone is Stylo's `AlternateOver`; the vendored Stylo's initial
-/// value is Chrome's `over`, so the two are told apart.
-pub(super) fn ruby_position(computed: &ComputedValues) -> RubyPosition {
-    match computed.slow_clone_ruby_position() {
-        StyloRubyPosition::AlternateOver => RubyPosition::Alternate,
-        StyloRubyPosition::AlternateUnder => RubyPosition::AlternateUnder,
-        StyloRubyPosition::Over => RubyPosition::Over,
-        StyloRubyPosition::Under => RubyPosition::Under,
-    }
-}
-
-/// A generic family as fontwich names it.
-fn generic_family(generic: StyloGenericFontFamily) -> GenericFamily {
-    match generic {
-        StyloGenericFontFamily::None | StyloGenericFontFamily::SansSerif => {
-            GenericFamily::SansSerif
-        }
-        StyloGenericFontFamily::Serif => GenericFamily::Serif,
-        StyloGenericFontFamily::Monospace => GenericFamily::Monospace,
-        StyloGenericFontFamily::Cursive => GenericFamily::Cursive,
-        StyloGenericFontFamily::Fantasy => GenericFamily::Fantasy,
-        StyloGenericFontFamily::SystemUi => GenericFamily::SystemUi,
+/// `alternate` alone is `alternate over`; the initial value is Chrome's `over`, so the two are
+/// told apart.
+pub(super) fn ruby_position(style: &impl TextStyle) -> RubyPosition {
+    match style.ruby_position() {
+        css::RubyPosition::AlternateOver => RubyPosition::Alternate,
+        css::RubyPosition::AlternateUnder => RubyPosition::AlternateUnder,
+        css::RubyPosition::Over => RubyPosition::Over,
+        css::RubyPosition::Under => RubyPosition::Under,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use style::ArcSlice;
-    use style::values::computed::font::{FontFamilyList, SingleFontFamily};
+    use blitz_text::OwnedTextStyle;
+    use blitz_text::style::{self as css, FontFamilyName};
 
-    use super::{StyloFontFamily, StyloGenericFontFamily, is_initial_family};
+    use super::{FontLists, computed_style};
 
+    /// The initial `font-family` names no family, which winkin sets in the language's standard
+    /// font; a family a style sheet names is kept.
     #[test]
-    fn only_the_initial_family_is_the_initial_family() {
-        assert!(is_initial_family(&StyloFontFamily::serif()));
-        // A style sheet's `serif`, in a list of its own as Stylo parses it.
-        let named = StyloFontFamily {
-            families: FontFamilyList {
-                list: ArcSlice::from_iter(std::iter::once(SingleFontFamily::Generic(
-                    StyloGenericFontFamily::Serif,
-                ))),
-            },
-            is_system_font: false,
-            is_initial: false,
+    fn the_initial_family_names_no_family() {
+        let initial = OwnedTextStyle::default();
+        let lists = FontLists::of(&initial, &());
+        assert!(
+            computed_style(&lists, &initial, 1.0, None)
+                .font
+                .families
+                .is_empty()
+        );
+        let named = OwnedTextStyle::with_families([FontFamilyName::named("Ahem")]);
+        let lists = FontLists::of(&named, &());
+        assert_eq!(
+            computed_style(&lists, &named, 1.0, None)
+                .font
+                .families
+                .len(),
+            1
+        );
+    }
+
+    /// Lengths are scaled into device pixels, and percentages kept as fractions.
+    #[test]
+    fn lengths_are_device_pixels() {
+        let style = OwnedTextStyle {
+            letter_spacing: css::LengthPercentage::Length(2.0),
+            word_spacing: css::LengthPercentage::Percentage(0.5),
+            ..OwnedTextStyle::default()
         };
-        assert!(!is_initial_family(&named));
+        let lists = FontLists::of(&style, &());
+        let computed = computed_style(&lists, &style, 2.0, None);
+        assert_eq!(computed.text.letter_spacing.px, 4.0);
+        assert_eq!(computed.text.word_spacing.fraction, 0.5);
+        assert_eq!(computed.font.size, 32.0);
     }
 }

@@ -211,7 +211,7 @@ impl InnerTextCollector {
             included
         };
 
-        for content in layout.logical_content() {
+        for content in layout.logical_content().map(InlineContent::from) {
             match content {
                 InlineContent::Box(id) => self.visit_inline_box(root, id, filter),
                 InlineContent::Text { node_id, range } => {

@@ -10,9 +10,8 @@ use anyrender::{Glyph, PaintScene};
 use blitz_dom::node::Marker;
 use blitz_dom::text::EditableText as _;
 use blitz_dom::text::winkin::winkin;
-use blitz_dom::text::winkin::{
-    COMPOSE_KEY, MarkerLayout, TextEditor, TextLayout, line_frame, page, relative_shift,
-};
+use blitz_dom::text::winkin::{COMPOSE_KEY, is_synthetic_key, line_frame, page};
+use blitz_dom::text::{MarkerLayout, TextEditor, TextLayout};
 use blitz_dom::text::InlineText as _;
 use blitz_dom::{BaseDocument, NodeId};
 use kurbo::{Affine, Insets, Point, Rect, Vec2};
@@ -134,7 +133,13 @@ pub(crate) fn paint<S: PaintScene>(
     let rtl = root_styles.as_ref().is_some_and(|styles| {
         styles.slow_clone_direction() == style::computed_values::direction::T::Rtl
     });
-    let propagated = propagated_decorations(doc, root);
+    let propagated = blitz_dom::text::blitz_text::PaintHost::propagated_decorations(
+        &crate::text::DomPaintHost { doc },
+        blitz_dom::text::node_key(root),
+    )
+    .into_iter()
+    .map(|style| style.0)
+    .collect();
     let painter = Painter {
         text,
         doc,
@@ -375,7 +380,15 @@ impl Painter<'_> {
         {
             return transform;
         }
-        let shift = relative_shift(self.doc, key, self.containing, self.rtl);
+        let shift = if is_synthetic_key(key) {
+            Vec2::ZERO
+        } else {
+            blitz_dom::text::relative_shift(
+                self.doc.get_node(NodeId::from_u64(key)),
+                self.containing,
+                self.rtl,
+            )
+        };
         let transform = if shift == Vec2::ZERO {
             self.transform
         } else {
@@ -387,7 +400,9 @@ impl Painter<'_> {
 
     /// The computed style `key` is painted in, on the first line or not.
     fn styles(&self, key: u64, first: bool) -> Option<ServoArc<ComputedValues>> {
-        self.text.computed_style(self.doc, key, first)
+        self.text
+            .computed_style(&crate::text::DomPaintHost { doc: self.doc }, key, first)
+            .map(|style| style.0)
     }
 
     /// The color of `key`'s text, on the first line or not.
@@ -415,7 +430,10 @@ impl Painter<'_> {
         first: bool,
     ) -> impl Iterator<Item = ServoArc<ComputedValues>> + '_ {
         let (propagated, own, first_line) = if key == self.root_key {
-            let first_line = first.then(|| self.text.first_line_style_of(key)).flatten();
+            let first_line = first
+                .then(|| self.text.first_line_style_of(key))
+                .flatten()
+                .map(|style| style.0);
             (&self.propagated[..], self.root_styles.clone(), first_line)
         } else {
             (&[][..], self.styles(key, first), None)
@@ -462,7 +480,7 @@ impl Painter<'_> {
         if !first {
             return;
         }
-        let Some(styles) = self.text.first_line_style_of(self.root_key) else {
+        let Some(styles) = self.text.first_line_style_of(self.root_key).map(|style| style.0) else {
             return;
         };
         let color = styles
@@ -1015,44 +1033,6 @@ impl Painter<'_> {
             },
         );
     }
-}
-
-/// The styles of the boxes around `root` whose decorations propagate to its
-/// inline content, the outermost first.
-///
-/// Decorations propagate to in-flow children, so the walk stops at a box
-/// that is floated, absolutely positioned or an atomic inline: its own
-/// decorations are its content's, its ancestors' are not.
-fn propagated_decorations(doc: &BaseDocument, root: NodeId) -> Vec<ServoArc<ComputedValues>> {
-    use style::values::specified::box_::{DisplayInside, DisplayOutside};
-    let mut propagated = Vec::new();
-    let mut at = doc.get_node(root);
-    while let Some(node) = at {
-        let Some(styles) = node.primary_styles() else {
-            // An anonymous block may have no style of its own: it is in the
-            // flow of the box around it.
-            at = node.parent.and_then(|parent| doc.get_node(parent));
-            continue;
-        };
-        if node.id != root && !styles.slow_clone_text_decoration_line().is_empty() {
-            propagated.push((*styles).clone());
-        }
-        let display = styles.slow_clone_display();
-        let atomic = display.outside() == DisplayOutside::Inline
-            && display.inside() != DisplayInside::Flow
-            && !display.is_contents();
-        // A `display: contents` element generates no box, so its `float` and `position`
-        // take nothing out of the flow.
-        let out_of_flow = !display.is_contents()
-            && (styles.slow_clone_position().is_absolutely_positioned()
-                || styles.slow_clone_float() != style::values::computed::Float::None);
-        if atomic || out_of_flow {
-            break;
-        }
-        at = node.parent.and_then(|parent| doc.get_node(parent));
-    }
-    propagated.reverse();
-    propagated
 }
 
 /// A box's corners in a line's own terms: at its line-left end on its over

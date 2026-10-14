@@ -1,0 +1,30 @@
+[package]
+name = "blitz-text-parley"
+description = "The Parley text backend for Blitz"
+documentation = "https://docs.rs/blitz-text-parley"
+version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+categories.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# The platform's fonts.
+system = ["parley/system"]
+# Dictionary-based line breaking.
+complex-scripts = ["parley/complex-scripts"]
+# Lines that flow around the host's floats.
+floats = []
+# Inline formatting contexts built in parallel, each thread with fonts of its own.
+parallel = ["dep:rayon", "dep:thread_local"]
+
+[dependencies]
+blitz-text = { workspace = true }
+parley = { workspace = true, features = ["bytemuck"] }
+skrifa = { workspace = true }
+kurbo = { workspace = true }
+rayon = { workspace = true, optional = true }
+thread_local = { workspace = true, optional = true }

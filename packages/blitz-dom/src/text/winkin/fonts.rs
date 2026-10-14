@@ -3,28 +3,21 @@
 
 use std::sync::{Arc, RwLock};
 
-use app_units::Au;
-use blitz_traits::net::Bytes;
+use blitz_text::{
+    BULLET_FONT, Bytes, DocumentText, FaceDescriptors, FontMetrics, FontMetricsSource, FontQuery,
+    TextFonts, decode_font_bytes,
+};
 use fontwich::{
     Attributes, Collection, FallbackKey, FallbackOverride, FallbackRequest, Family, FontBytes,
-    FontStyle, FontWeight, FontWidth, LayerBuilder, Role,
+    LayerBuilder, Role,
 };
 use skrifa::MetadataProvider as _;
 use skrifa::instance::{LocationRef, Size};
 use skrifa::metrics::{GlyphMetrics, Metrics};
-use style::device::servo::FontMetricsProvider;
-use style::font_metrics::FontMetrics;
-use style::properties::style_structs::Font as FontStyles;
-use style::values::computed::font::{
-    FontSizeAdjust, FontStyle as StyloFontStyle, QueryFontMetricsFlags,
-};
-use style::values::computed::{CSSPixelLength, Length};
 use winkin::style::FontFamilyName;
 use winkin::{Context, SharedFonts};
 
 use super::TextContext;
-use crate::net::FontFaceOverrides;
-use crate::text::{DocumentText, TextFonts};
 
 /// The fonts documents lay text out with: a fontwich collection and the parsed fonts every
 /// context shares. Clones share loaded fonts, fallback answers and parsed fonts, so hand a clone
@@ -84,7 +77,7 @@ impl FallbackOverride for OnlyFamilies {
 impl TextFonts for FontContext {
     fn with_single_font(font_data: &[u8]) -> Self {
         let mut layer = LayerBuilder::new(Role::Application);
-        let decoded = crate::decode_font_bytes(font_data).into_owned();
+        let decoded = decode_font_bytes(font_data).into_owned();
         let families = layer.add_data(FontBytes::new(decoded)).unwrap_or_default();
         let names = families
             .iter()
@@ -97,7 +90,7 @@ impl TextFonts for FontContext {
     fn add_fonts(&mut self, font_data: impl Into<Bytes>) {
         let mut layer = LayerBuilder::new(Role::Application);
         let font_data = font_data.into();
-        let bytes = match crate::decode_font_bytes(&font_data) {
+        let bytes = match decode_font_bytes(&font_data) {
             std::borrow::Cow::Owned(decoded) => FontBytes::new(decoded),
             std::borrow::Cow::Borrowed(_) => FontBytes::new(font_data),
         };
@@ -108,10 +101,13 @@ impl TextFonts for FontContext {
 }
 
 impl DocumentText for TextContext {
+    type Fonts = FontContext;
+    type Metrics = WinkinFontMetrics;
+
     fn new(fonts: Option<FontContext>) -> Self {
         let given = fonts.unwrap_or_default();
         let mut shipped = LayerBuilder::new(Role::Application);
-        let _ = shipped.add_data(FontBytes::from(crate::BULLET_FONT));
+        let _ = shipped.add_data(FontBytes::from(BULLET_FONT));
         let base = given.collection.clone().with_layer(shipped.snapshot());
         let document = LayerBuilder::new(Role::Document);
         let collection = base.clone().with_layer(document.snapshot());
@@ -131,18 +127,14 @@ impl DocumentText for TextContext {
         self.given.clone()
     }
 
-    fn add_web_font(&mut self, bytes: Bytes, overrides: &FontFaceOverrides) {
+    fn add_web_font(&mut self, bytes: Bytes, family: Option<&str>, descriptors: &FaceDescriptors) {
         // A rule with no family, or bytes that are not a font, adds nothing, as CSS falls back
         // past a face whose download is no font.
         let bytes = FontBytes::new(bytes);
-        let added = match overrides.family_name.as_deref() {
+        let added = match family {
             Some(family) => self
                 .document
-                .add_face(
-                    family,
-                    fontwich_descriptors(&overrides.descriptors),
-                    Some((bytes, 0)),
-                )
+                .add_face(family, fontwich_descriptors(descriptors), Some((bytes, 0)))
                 .is_ok(),
             None => self.document.add_data(bytes).is_ok(),
         };
@@ -154,29 +146,29 @@ impl DocumentText for TextContext {
         }
     }
 
-    fn font_metrics_provider(&self) -> Box<dyn FontMetricsProvider> {
-        Box::new(WinkinFontMetricsProvider {
+    fn font_metrics(&self) -> WinkinFontMetrics {
+        WinkinFontMetrics {
             fonts: self.metrics.clone(),
-        })
+        }
     }
 }
 
 /// Font metrics from the fonts a document's text is laid out with: the first font in the family
 /// list that maps the character measured, then the platform's standard font.
-struct WinkinFontMetricsProvider {
+pub struct WinkinFontMetrics {
     fonts: Arc<RwLock<Collection>>,
 }
 
-impl core::fmt::Debug for WinkinFontMetricsProvider {
+impl core::fmt::Debug for WinkinFontMetrics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "WinkinFontMetricsProvider")
+        write!(f, "WinkinFontMetrics")
     }
 }
 
 /// The bytes of a font, and its index in them.
 type LoadedFont = (FontBytes, u32);
 
-impl WinkinFontMetricsProvider {
+impl WinkinFontMetrics {
     /// The first font of `families`, matched to `attributes`, that maps `ch`; or else the
     /// standard font's.
     fn font_for(
@@ -201,42 +193,32 @@ impl WinkinFontMetricsProvider {
     }
 }
 
-impl FontMetricsProvider for WinkinFontMetricsProvider {
-    fn query_font_metrics(
-        &self,
-        vertical: bool,
-        font_styles: &FontStyles,
-        font_size: CSSPixelLength,
-        _flags: QueryFontMetricsFlags,
-    ) -> FontMetrics {
+impl FontMetricsSource for WinkinFontMetrics {
+    fn query<'a, I>(&self, query: FontQuery<'_, I>) -> FontMetrics
+    where
+        I: Iterator<Item = blitz_text::style::FontFamilyName<'a>> + Clone,
+    {
+        use blitz_text::style::FontSizeAdjust;
         let fonts = self.fonts.read().unwrap();
-        let families: Vec<FontFamilyName<'_>> = font_styles
-            .font_family
-            .families
-            .list
-            .iter()
-            .map(super::style::font_family_name)
-            .collect();
+        let families: Vec<FontFamilyName<'_>> =
+            query.families.map(super::style::family_name).collect();
         let attributes = Attributes {
-            width: FontWidth::from_percentage(font_styles.font_width.0.to_float()),
-            weight: FontWeight::new(font_styles.font_weight.value()),
-            style: match font_styles.font_style {
-                StyloFontStyle::NORMAL => FontStyle::Normal,
-                StyloFontStyle::ITALIC => FontStyle::Italic,
-                oblique => FontStyle::Oblique(Some(oblique.oblique_degrees())),
-            },
+            width: query.width,
+            weight: query.weight,
+            style: query.style,
         };
-        let variations: Vec<(skrifa::Tag, f32)> = font_styles
-            .font_variation_settings
-            .0
+        let variations: Vec<(skrifa::Tag, f32)> = query
+            .variations
             .iter()
             .map(|setting| {
                 (
-                    skrifa::Tag::from_be_bytes(setting.tag.0.to_be_bytes()),
+                    skrifa::Tag::from_be_bytes(setting.tag.to_bytes()),
                     setting.value,
                 )
             })
             .collect();
+        let vertical = query.vertical;
+        let font_size = query.size;
 
         // The advance of `ch`, scaled as winkin scales a shaped advance: font units times size
         // over units per em. Text set upright in a vertical line advances down it: by the
@@ -264,17 +246,13 @@ impl FontMetricsProvider for WinkinFontMetricsProvider {
             } else {
                 GlyphMetrics::new(&font, Size::unscaled(), location).advance_width(glyph)?
             };
-            Some(advance * (font_size.px() / f32::from(upem)))
+            Some(advance * (font_size / f32::from(upem)))
         };
         let metrics_of = |ch: char| -> Option<(f32, Option<f32>, Option<f32>)> {
             let (bytes, index) = Self::font_for(&fonts, &families, attributes, ch)?;
             let font = skrifa::FontRef::from_index(bytes.data(), index).ok()?;
             let location = font.axes().location(variations.iter().copied());
-            let metrics = Metrics::new(
-                &font,
-                Size::new(font_size.px()),
-                LocationRef::from(&location),
-            );
+            let metrics = Metrics::new(&font, Size::new(font_size), LocationRef::from(&location));
             Some((metrics.ascent, metrics.x_height, metrics.cap_height))
         };
 
@@ -285,7 +263,7 @@ impl FontMetricsProvider for WinkinFontMetricsProvider {
         let x_height = x_height.filter(|xh| *xh != 0.0);
         // `font-size-adjust` scales the font to its used size, which the font-relative units
         // measure: the metric it names, over the size, is set to its value.
-        let metric = match font_styles.font_size_adjust {
+        let metric = match query.size_adjust {
             FontSizeAdjust::None => None,
             FontSizeAdjust::ExHeight(value) => x_height.map(|metric| (value, metric)),
             FontSizeAdjust::CapHeight(value) => cap_height.map(|metric| (value, metric)),
@@ -295,37 +273,24 @@ impl FontMetricsProvider for WinkinFontMetricsProvider {
             }
         };
         let scale = metric
-            .map(|(value, metric)| value.0 * font_size.px() / metric)
+            .map(|(value, metric)| value * font_size / metric)
             .filter(|scale| scale.is_finite() && *scale >= 0.0)
             .unwrap_or(1.0);
-        let scaled = |metric: f32| CSSPixelLength::new(metric * scale);
+        let scaled = |metric: f32| metric * scale;
 
         FontMetrics {
             ascent: scaled(ascent),
             x_height: x_height.map(scaled),
             cap_height: cap_height.map(scaled),
-            zero_advance_measure: zero_advance.map(scaled),
+            zero_advance: zero_advance.map(scaled),
             ic_width: ic_advance.map(scaled),
-            script_percent_scale_down: None,
-            script_script_percent_scale_down: None,
         }
-    }
-
-    fn base_size_for_generic(
-        &self,
-        generic: style::values::computed::font::GenericFontFamily,
-    ) -> Length {
-        let size = match generic {
-            style::values::computed::font::GenericFontFamily::Monospace => 13.0,
-            _ => 16.0,
-        };
-        Length::from(Au::from_f32_px(size))
     }
 }
 
 /// An `@font-face` rule's descriptors as fontwich declares a face with them.
-fn fontwich_descriptors(descriptors: &crate::text::FaceDescriptors) -> fontwich::FaceDescriptors {
-    use crate::text::parlance::FontStyle;
+fn fontwich_descriptors(descriptors: &FaceDescriptors) -> fontwich::FaceDescriptors {
+    use blitz_text::parlance::FontStyle;
     use fontwich::{FaceStyle, FontWeight, FontWidth};
     use winkin::style::{FontFeature, FontVariation, Tag};
 

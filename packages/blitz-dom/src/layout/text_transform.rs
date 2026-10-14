@@ -549,7 +549,17 @@ fn ceil_char_boundary(s: &str, mut index: usize) -> usize {
 #[cfg(all(test, text_parley))]
 mod tests {
     use super::*;
-    use parley::{FontContext, LayoutContext, TextStyle, TreeBuilder};
+    use blitz_text_parley::parley::{FontContext, LayoutContext, TextStyle, TreeBuilder};
+
+    impl PushedText for TreeBuilder<'_, ()> {
+        fn text(&self) -> &str {
+            TreeBuilder::text(self)
+        }
+
+        fn has_pending_whitespace(&self) -> bool {
+            TreeBuilder::has_pending_whitespace(self)
+        }
+    }
 
     fn transform(kind: TextTransform, lang: &str, texts: &[&str]) -> Vec<String> {
         let transform = CaseTransform {

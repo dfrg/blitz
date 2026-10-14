@@ -26,7 +26,7 @@ use crate::layout::resolve_calc_value;
 use crate::node::TextLayout;
 use crate::text::{
     BoxMeasure, FloatSide, InlineLayoutEngine as _, InlineText as _, LastBaseline, LineArea,
-    LinesInputs, Measure, Placement,
+    LinesInputs, Measure, Placement, StyloStyle, key_node, node_key,
 };
 
 impl LayoutPassState<'_> {
@@ -103,9 +103,17 @@ impl LayoutPassState<'_> {
             _ => 0.0,
         };
         let sizes = self.measure_inline_boxes(node_id, child_inputs, pass, basis, vertical);
+        let doc = &mut *self.doc;
+        let source = super::DomSource {
+            nodes: &doc.nodes,
+            stylist: &doc.stylist,
+            lock: &doc.guard,
+        };
         inline_layout.prepare(
-            self,
+            &mut doc.text,
+            &source,
             node_id,
+            doc.viewport.scale(),
             LinesInputs {
                 sizes: &sizes,
                 pass,
@@ -119,8 +127,8 @@ impl LayoutPassState<'_> {
             .iter()
             .filter(|measured| measured.float.is_some())
             .map(|measured| {
-                let style = self.child_layout_style(&self.nodes[measured.node]);
-                (measured.node.as_u64(), style.clear())
+                let style = self.child_layout_style(&self.nodes[key_node(measured.key)]);
+                (measured.key.0, style.clear())
             })
             .collect();
 
@@ -232,7 +240,9 @@ impl LayoutPassState<'_> {
             pass: self.nodes.geometry_generation(),
         };
         let floats = {
-            let style = self.nodes[node_id].primary_styles().map(|s| (*s).clone());
+            let style = self.nodes[node_id]
+                .primary_styles()
+                .map(|s| StyloStyle((*s).clone()));
             let mut room = FloatRoom {
                 #[cfg(feature = "floats")]
                 outer: Some(&block_ctx),
@@ -245,7 +255,7 @@ impl LayoutPassState<'_> {
                 placed: Vec::new(),
             };
             crate::text::PERF_COUNTS[1].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            inline_layout.break_lines(&mut self.text, area, style.as_deref(), &mut room);
+            inline_layout.break_lines(&mut self.text, area, style.as_ref(), &mut room);
             room.placed
         };
 
@@ -327,7 +337,7 @@ impl LayoutPassState<'_> {
         };
         for (order, placed) in placements {
             if inputs.run_mode == RunMode::PerformLayout {
-                span_cb_flags |= self.inline_span_cb_flags(node_id, placed.node);
+                span_cb_flags |= self.inline_span_cb_flags(node_id, key_node(placed.key));
             }
             self.place_inline_box(&placed, order as u32, &frame_at, &mut oof_candidates);
         }
@@ -384,8 +394,10 @@ impl LayoutPassState<'_> {
             .filter(|_| !suppresses_baseline)
             .map(line_baseline);
 
-        if inputs.run_mode == RunMode::PerformLayout {
-            inline_layout.span_cb_flags = span_cb_flags;
+        if inputs.run_mode == RunMode::PerformLayout
+            && let Some(element) = self.nodes[node_id].element_data_mut()
+        {
+            element.inline_span_cb_flags = span_cb_flags;
         }
 
         self.put_inline_layout(node_id, inline_layout);
@@ -500,7 +512,8 @@ impl LayoutPassState<'_> {
             container_direction,
             scale,
         } = *at;
-        let node = &self.nodes[placed.node];
+        let placed_node = key_node(placed.key);
+        let node = &self.nodes[placed_node];
         let style = self.child_layout_style(node);
         let padding = style
             .padding()
@@ -594,7 +607,7 @@ impl LayoutPassState<'_> {
             };
 
             oof_candidates.push(OofCandidate {
-                node: crate::taffy_node_id(placed.node),
+                node: crate::taffy_node_id(placed_node),
                 order,
                 position,
                 static_position: taffy::Point {
@@ -624,7 +637,7 @@ impl LayoutPassState<'_> {
         // Re-measure the box to get its border-box size (this hits the layout
         // cache). The size cannot be recovered from the room the line reserves for it,
         // as that is clamped to be non-negative.
-        let mut output = self.compute_child_layout(crate::taffy_node_id(placed.node), box_inputs);
+        let mut output = self.compute_child_layout(crate::taffy_node_id(placed_node), box_inputs);
         let size = output.size;
 
         let is_relative = position == taffy::Position::Relative;
@@ -642,14 +655,27 @@ impl LayoutPassState<'_> {
         };
         // The inline boxes it is in move it as `position: relative` moves them, where the
         // backend paints them moved.
-        let shift = TextLayout::inline_shift(
-            self,
-            placed.node,
-            container_content_size,
-            container_direction == Direction::Rtl,
-        );
+        let shift = if TextLayout::SHIFTS_RELATIVE_INLINES {
+            let parent = self.nodes[placed_node]
+                .parent
+                .and_then(|parent| self.nodes.get(parent));
+            let shift = super::relative_shift(
+                parent,
+                kurbo::Size::new(
+                    f64::from(container_content_size.width),
+                    f64::from(container_content_size.height),
+                ),
+                container_direction == Direction::Rtl,
+            );
+            taffy::Point {
+                x: shift.x as f32,
+                y: shift.y as f32,
+            }
+        } else {
+            taffy::Point::ZERO
+        };
 
-        let layout = self.nodes[placed.node].unrounded_layout_mut();
+        let layout = self.nodes[placed_node].unrounded_layout_mut();
         layout.size = size;
         layout.scrollable_overflow_rect = output.scrollable_overflow_rect;
         layout.location.x =
@@ -775,7 +801,9 @@ impl LayoutPassState<'_> {
             pass: self.nodes.geometry_generation(),
         };
         let floats = {
-            let style = self.nodes[node_id].primary_styles().map(|s| (*s).clone());
+            let style = self.nodes[node_id]
+                .primary_styles()
+                .map(|s| StyloStyle((*s).clone()));
             let mut room = FloatRoom {
                 #[cfg(feature = "floats")]
                 outer: None,
@@ -788,7 +816,7 @@ impl LayoutPassState<'_> {
                 placed: Vec::new(),
             };
             crate::text::PERF_COUNTS[1].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            inline_layout.break_lines(&mut self.text, area, style.as_deref(), &mut room);
+            inline_layout.break_lines(&mut self.text, area, style.as_ref(), &mut room);
             room.placed
         };
         // How far the lines and the floats reach across the block from its start.
@@ -1118,13 +1146,13 @@ impl LayoutPassState<'_> {
                     crate::taffy_node_id(node),
                     float_box_inputs(pass_inputs, basis, margin),
                 );
-                sizes.push(BoxMeasure {
+                sizes.push(box_measure(
                     node,
-                    size: output.size,
+                    output.size,
                     margin,
-                    baseline: None,
-                    float: Some(float_side),
-                });
+                    None,
+                    Some(float_side),
+                ));
                 continue;
             }
             let replaced = held
@@ -1198,13 +1226,7 @@ impl LayoutPassState<'_> {
             } else {
                 output.baselines.first.or(output.baselines.last)
             };
-            sizes.push(BoxMeasure {
-                node,
-                size: output.size,
-                margin,
-                baseline,
-                float: None,
-            });
+            sizes.push(box_measure(node, output.size, margin, baseline, None));
         }
         sizes
     }
@@ -1313,6 +1335,31 @@ fn reads_own_baseline(style: &style::properties::ComputedValues) -> bool {
         box_style.slow_clone_alignment_baseline(),
         AlignmentBaseline::TextTop | AlignmentBaseline::TextBottom
     )
+}
+
+/// An atomic inline or a float as Taffy measured it, as the text backend takes it.
+fn box_measure(
+    node: NodeId,
+    size: Size<f32>,
+    margin: taffy::Rect<f32>,
+    baseline: Option<f32>,
+    float: Option<FloatSide>,
+) -> BoxMeasure {
+    BoxMeasure {
+        key: node_key(node),
+        size: blitz_text::Size {
+            width: size.width,
+            height: size.height,
+        },
+        margin: blitz_text::style::Sides {
+            top: margin.top,
+            right: margin.right,
+            bottom: margin.bottom,
+            left: margin.left,
+        },
+        baseline,
+        float,
+    }
 }
 
 /// What the pass that lays out an inline formatting context measured its boxes for.

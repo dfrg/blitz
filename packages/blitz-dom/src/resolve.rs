@@ -347,27 +347,23 @@ impl BaseDocument {
         deferred_construction_nodes.sort_unstable_by_key(|task| task.node_id);
         deferred_construction_nodes.dedup_by_key(|task| task.node_id);
 
-        let mut layouts: Vec<(NodeId, Box<TextLayout>)> = deferred_construction_nodes
+        let mut layouts: Vec<(crate::text::NodeKey, Box<TextLayout>)> = deferred_construction_nodes
             .into_iter()
             .map(|task| match task.data {
-                ConstructionTaskData::InlineLayout(layout) => (task.node_id, layout),
+                ConstructionTaskData::InlineLayout(layout) => {
+                    (crate::text::node_key(task.node_id), layout)
+                }
             })
             .collect();
-        let guard = self.guard.read();
-        let guards = style::shared_lock::StylesheetGuards::same(&guard);
-        TextLayout::build_layouts(
-            &mut self.text,
-            &self.nodes,
-            crate::text::DocumentCascade {
-                stylist: &self.stylist,
-                guards: &guards,
-            },
-            self.viewport.scale(),
-            &mut layouts,
-        );
-        drop(guard);
+        let source = crate::layout::inline::DomSource {
+            nodes: &self.nodes,
+            stylist: &self.stylist,
+            lock: &self.guard,
+        };
+        TextLayout::build_layouts(&mut self.text, &source, self.viewport.scale(), &mut layouts);
 
-        for (node_id, layout) in layouts {
+        for (key, layout) in layouts {
+            let node_id = crate::text::key_node(key);
             self.nodes[node_id].clear_layout_cache();
             self.nodes[node_id]
                 .element_data_mut()

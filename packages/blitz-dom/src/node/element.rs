@@ -82,6 +82,12 @@ pub struct ElementData {
     /// Text layout (elements with inline inner display mode only)
     pub inline_layout_data: Option<Box<TextLayout>>,
 
+    /// The out-of-flow positions for which some inline span with an inline box below it is a
+    /// containing block (as `SPAN_*_CB` flags), which the inline root claims those boxes in place
+    /// of. Set by each `RunMode::PerformLayout` run of inline layout, and kept with the inline
+    /// layout.
+    pub(crate) inline_span_cb_flags: stylo_taffy::StyleFlags,
+
     /// Data associated with display: list-item. Note that this display mode
     /// does not exclude inline_layout_data
     pub list_item_data: Option<Box<ListItemLayout>>,
@@ -322,6 +328,7 @@ impl Clone for ElementData {
             background_images: self.background_images.clone(),
             mask_images: self.mask_images.clone(),
             inline_layout_data: self.inline_layout_data.clone(),
+            inline_span_cb_flags: self.inline_span_cb_flags,
             list_item_data: self.list_item_data.clone(),
             template_contents: self.template_contents,
 
@@ -434,6 +441,7 @@ impl ElementData {
             is_focussable: false,
             style_attribute: Default::default(),
             inline_layout_data: None,
+            inline_span_cb_flags: stylo_taffy::StyleFlags::empty(),
             list_item_data: None,
             special_data: SpecialElementData::None,
             template_contents: None,
@@ -840,6 +848,7 @@ impl ElementData {
     }
 
     pub fn take_inline_layout(&mut self) -> Option<Box<TextLayout>> {
+        self.inline_span_cb_flags = stylo_taffy::StyleFlags::empty();
         std::mem::take(&mut self.inline_layout_data)
     }
 
@@ -953,13 +962,7 @@ pub struct ListItemLayout {
     pub position: ListItemLayoutPosition,
 }
 
-//We seperate chars from strings in order to optimise rendering - ie not needing to
-//construct a whole text layout for simple char markers
-#[derive(Debug, PartialEq, Clone)]
-pub enum Marker {
-    Char(char),
-    String(String),
-}
+pub use blitz_text::Marker;
 
 //Value depends on list-style-position, determining whether a seperate layout is created for it
 #[derive(Clone)]
