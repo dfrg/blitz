@@ -1,4 +1,5 @@
-//! The winkin text backend.
+//! The winkin text backend for Blitz: inline formatting contexts, form controls and list
+//! markers laid out by [winkin](https://github.com/dfrg/winkin), behind [`blitz_text`]'s traits.
 //!
 //! The content of an inline formatting context is built from what the host pushes the first time
 //! it is laid out, and again whenever it changes or its atomic inlines measure differently:
@@ -7,7 +8,7 @@
 
 mod editor;
 mod fonts;
-pub(crate) mod style;
+mod style;
 
 use blitz_text::style::{Clear, TextStyle};
 use blitz_text::{
@@ -96,7 +97,7 @@ pub struct TextContext {
     pub(crate) generation: u64,
     /// The context each thread builds with in box construction, and the
     /// generation of its collection.
-    #[cfg(feature = "parallel-construct")]
+    #[cfg(feature = "parallel")]
     pub(crate) threads: thread_local::ThreadLocal<std::cell::RefCell<(u64, Context)>>,
     /// The fonts the document was handed, which its iframes are handed too.
     given: FontContext,
@@ -372,7 +373,6 @@ pub(crate) fn build<S: TextStyle, C: InlineSource<S>>(
     scale: f32,
     root: blitz_text::NodeKey,
 ) {
-    crate::text::PERF_COUNTS[0].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let key = NodeKey(root.0);
     text.built = false;
     text.laid = false;
@@ -1303,7 +1303,7 @@ impl<S: TextStyle> InlineLayout<S> for TextLayout<S> {
     ) {
         // Each atomic inline and float takes the size it was last measured
         // at, which the first measure in layout replaces.
-        #[cfg(feature = "parallel-construct")]
+        #[cfg(feature = "parallel")]
         {
             use rayon::prelude::*;
             // Each thread builds with a context of its own, which takes the
@@ -1329,7 +1329,7 @@ impl<S: TextStyle> InlineLayout<S> for TextLayout<S> {
                 build(source, own, layout, scale, *node);
             });
         }
-        #[cfg(not(feature = "parallel-construct"))]
+        #[cfg(not(feature = "parallel"))]
         for (node, layout) in layouts {
             build(source, &mut cx.cx, layout, scale, *node);
         }

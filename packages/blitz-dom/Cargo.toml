@@ -24,16 +24,16 @@ default = [
 # The text backend that lays out, edits and reads back text: Parley or winkin.
 # One of them must be enabled; with both, Parley is used.
 parley = ["dep:blitz-text-parley", "dep:icu_casemap", "dep:writeable"]
-winkin = ["dep:winkin", "dep:fontwich"]
+winkin = ["dep:blitz-text-winkin"]
 custom-widget = ["dep:anyrender", "accessibility"]
 tracing = ["dep:tracing", "blitz-text/tracing"]
 svg = ["dep:usvg", "dep:svgtypes"]
 # WOFF decoding (using the "wuff" crate which is pure Rust)
 woff = ["dep:wuff", "blitz-text/woff"]
 accessibility = ["accesskit"]
-system-fonts = ["blitz-text-parley?/system", "fontwich?/system", "fontwich?/mmap"]
+system-fonts = ["blitz-text-parley?/system", "blitz-text-winkin?/system"]
 # complex-scripts: enable dictionary-based line-breaking
-complex-scripts = ["blitz-text-parley?/complex-scripts", "winkin?/dictionaries"]
+complex-scripts = ["blitz-text-parley?/complex-scripts", "blitz-text-winkin?/dictionaries"]
 # text-transform-icu: language-aware, Unicode-complete case mapping for `text-transform`
 # (otherwise falls back to the standard library's case mapping). It applies to Parley only:
 # winkin maps case itself, so a build without Parley does not compile ICU's case mapper.
@@ -46,7 +46,7 @@ file-input = []
 # Overlay-scrollbar thumb interaction (drag + hover tracking). Normally
 # enabled through `blitz-paint/scrollbars`, which paints the thumbs.
 scrollbars = []
-parallel-construct = ["blitz-text-parley?/parallel"]
+parallel-construct = ["blitz-text-parley?/parallel", "blitz-text-winkin?/parallel"]
 log-phase-times = ["debug_timer/enable"]
 
 [dependencies]
@@ -54,6 +54,7 @@ log-phase-times = ["debug_timer/enable"]
 blitz-traits = { workspace = true }
 blitz-text = { workspace = true }
 blitz-text-parley = { workspace = true, optional = true }
+blitz-text-winkin = { workspace = true, optional = true }
 stylo_taffy = { workspace = true, features = ["default"] }
 debug_timer = { workspace = true }
 
@@ -78,8 +79,6 @@ anyrender = { workspace = true, optional = true }
 # Linebender/Fontations dependencies
 accesskit = { workspace = true, optional = true }
 parlance = { workspace = true }
-winkin = { workspace = true, optional = true }
-fontwich = { workspace = true, optional = true }
 skrifa = { workspace = true }
 linebender_resource_handle = { workspace = true }
 color = { workspace = true }
