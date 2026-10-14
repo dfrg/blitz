@@ -14,16 +14,13 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use blitz_traits::node_id::NodeId;
+use blitz_text::{Edit, EditEngine, EditableText, EditorMetrics, Motion, TextStyle};
 use kurbo::{Rect, Size};
-use style::properties::ComputedValues;
-use style::servo_arc::Arc as ServoArc;
 use winkin::NodeKey;
 use winkin::config::PastLines;
 use winkin::selection::{Affinity, Granularity, MotionDirection, Position, Selection};
 
 use super::{PIECE_KEYS, PIECE_SHIFT, TextContext, TextLayout};
-use crate::text::{Edit, EditEngine, EditableText, EditorMetrics, Motion};
 
 /// How many changes can be undone.
 const HISTORY_LIMIT: usize = 100;
@@ -71,18 +68,18 @@ impl Pieces {
     }
 }
 
-/// The text of an `<input>` or `<textarea>`, laid out by winkin.
-pub struct TextEditor {
+/// The text of an `<input>` or `<textarea>`, laid out by winkin in styles of type `S`.
+pub struct TextEditor<S> {
     /// The text, with any text an input method is composing.
     text: String,
     selection: Selection,
     is_multiline: bool,
     /// The control, and its computed style, which the text is set in.
-    style: Option<(NodeId, ServoArc<ComputedValues>)>,
+    style: Option<(blitz_text::NodeKey, S)>,
     scale: f32,
     /// The width lines wrap at in a `<textarea>`, in device pixels.
     width: Option<f32>,
-    layout: TextLayout,
+    layout: TextLayout<S>,
     /// Whether a setter changed what the text is laid out with since it was last laid out.
     dirty: bool,
     undo: Vec<Snapshot>,
@@ -99,9 +96,9 @@ pub struct TextEditor {
     builds: u64,
 }
 
-impl TextEditor {
+impl<S: TextStyle> TextEditor<S> {
     /// The laid-out text, which the renderer paints, once it is laid out.
-    pub fn text_layout(&self) -> &TextLayout {
+    pub fn text_layout(&self) -> &TextLayout<S> {
         &self.layout
     }
 
@@ -167,7 +164,7 @@ impl TextEditor {
 
     /// The key the layout gives the control's node, without a piece's number.
     fn node_key(&self) -> u64 {
-        self.style.as_ref().map_or(0, |(node, _)| node.as_u64())
+        self.style.as_ref().map_or(0, |(node, _)| node.0)
     }
 
     /// Where the text an input method is composing is, in bytes of the text, while it composes.
@@ -191,7 +188,7 @@ impl TextEditor {
         self.masked = super::build_plain_text(
             cx,
             &mut self.layout,
-            *node,
+            node.0,
             style,
             &self.text,
             composition,
@@ -417,7 +414,7 @@ fn motion(motion: Motion, extend: bool) -> winkin::selection::Motion {
     }
 }
 
-impl EditableText for TextEditor {
+impl<S: TextStyle> EditableText for TextEditor<S> {
     fn raw_text(&self) -> &str {
         &self.text
     }
@@ -486,7 +483,9 @@ impl EditableText for TextEditor {
     }
 }
 
-impl EditEngine for TextEditor {
+impl<S: TextStyle> EditEngine<S> for TextEditor<S> {
+    type Context = TextContext;
+
     fn new(is_multiline: bool) -> Self {
         Self {
             text: String::new(),
@@ -528,18 +527,19 @@ impl EditEngine for TextEditor {
         }
     }
 
-    fn set_style(&mut self, node: NodeId, style: Option<&ComputedValues>, scale: f32) {
-        self.style = style.map(|style| (node, ServoArc::new(style.clone())));
+    fn set_style(&mut self, node: blitz_text::NodeKey, style: Option<&S>, scale: f32) {
+        self.style = style.map(|style| (node, style.clone()));
         self.scale = scale;
         self.width = None;
         self.dirty = true;
     }
 
-    fn restyle(&mut self, node: NodeId, style: &ServoArc<ComputedValues>) -> bool {
+    fn restyle(&mut self, node: blitz_text::NodeKey, style: &S) -> bool {
         // The alignment, indent, wrap style and fit change without a new box.
-        let changed = self.style.as_ref().is_some_and(|(_, held)| {
-            !ServoArc::ptr_eq(held, style) && super::block_text_differs(held, style)
-        });
+        let changed = self
+            .style
+            .as_ref()
+            .is_some_and(|(_, held)| !held.same_block_text(style));
         if changed {
             self.style = Some((node, style.clone()));
             self.dirty = true;

@@ -15,7 +15,7 @@ use stylo_taffy::StyleFlags;
 use super::resolve_calc_value;
 use crate::layout::LayoutPassState;
 
-pub(crate) use build::push_inline_content;
+pub(crate) use build::DomSource;
 
 /// What `compute_inline_layout_inner` has resolved from the container's styles and inputs
 /// before the inline boxes are measured and the lines broken.
@@ -438,4 +438,63 @@ impl LayoutPassState<'_> {
 #[inline(always)]
 pub(crate) fn f32_max(a: f32, b: f32) -> f32 {
     a.max(b)
+}
+
+/// Returns how far `position: relative` moves what `node` paints, in CSS pixels: the offsets of its inline
+/// box and every inline box it is in, up to the block the lines belong to, whose own offset moves
+/// its whole box.
+///
+/// `containing` is the block's content box in CSS pixels, which percentages are of, and `rtl` its
+/// direction, under which `right` outweighs `left`.
+pub fn relative_shift(
+    node: Option<&crate::Node>,
+    containing: kurbo::Size,
+    rtl: bool,
+) -> kurbo::Vec2 {
+    use style::computed_values::position::T as Position;
+    use style::values::computed::{CSSPixelLength, Inset};
+    let mut shift = kurbo::Vec2::ZERO;
+    let resolve = |inset: &Inset, basis: f64| match inset {
+        Inset::LengthPercentage(length) => Some(f64::from(
+            length.resolve(CSSPixelLength::new(basis as f32)).px(),
+        )),
+        _ => None,
+    };
+    let mut at = node;
+    while let Some(node) = at {
+        match &node.data {
+            crate::NodeData::Text(_) => {}
+            crate::NodeData::Element(_) => {
+                let Some(computed) = node.primary_styles() else {
+                    break;
+                };
+                let display = computed.slow_clone_display();
+                if !display.is_contents() {
+                    // An atomic inline or a block moves as a box of its own.
+                    if (display.outside(), display.inside())
+                        != (DisplayOutside::Inline, DisplayInside::Flow)
+                    {
+                        break;
+                    }
+                    if computed.slow_clone_position() == Position::Relative {
+                        let insets = computed.get_position();
+                        let left = resolve(&insets.left, containing.width);
+                        let right = resolve(&insets.right, containing.width);
+                        shift.x += match (left, right) {
+                            (Some(left), Some(_)) if !rtl => left,
+                            (_, Some(right)) => -right,
+                            (Some(left), None) => left,
+                            (None, None) => 0.0,
+                        };
+                        let top = resolve(&insets.top, containing.height);
+                        let bottom = resolve(&insets.bottom, containing.height);
+                        shift.y += top.or(bottom.map(|bottom| -bottom)).unwrap_or(0.0);
+                    }
+                }
+            }
+            _ => break,
+        }
+        at = node.parent.map(|parent| node.with(parent));
+    }
+    shift
 }

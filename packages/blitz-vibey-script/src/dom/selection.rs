@@ -200,7 +200,7 @@ fn rendered_point(doc: &BaseDocument, point: Point) -> Option<Point> {
             if let NodeData::Text(data) = &node.data {
                 let offset = utf16_to_byte_offset(&data.content, point.1);
                 return layout
-                    .source_offset(node.id, offset)
+                    .source_offset(blitz_dom::text::node_key(node.id), offset)
                     .map(|offset| (root, offset));
             }
             // A point in a node with neither text nor children, such as a comment, stands

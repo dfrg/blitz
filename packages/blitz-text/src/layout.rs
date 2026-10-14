@@ -1,13 +1,11 @@
 //! Laying out an inline formatting context, and reading it back.
 
-use core::cell::RefCell;
 use core::ops::Range;
 
 use kurbo::Rect;
 
 use crate::NodeKey;
 use crate::build::{FloatSide, InlineSource};
-use crate::paint::{PaintFrame, PaintHost, PaintScratch, TextSink};
 use crate::style::{Sides, TextStyle};
 
 /// A width and a height, in the units the method names.
@@ -85,15 +83,19 @@ pub trait InlineText: Default + Clone + core::fmt::Debug {
     fn for_each_selection_rect(&self, start: usize, end: usize, f: impl FnMut(Rect));
 
     /// Returns the boxes the non-atomic inline element `key` has on each line, first line first,
-    /// in CSS pixels relative to the content box's top left, moved down by
-    /// [`block_offset`](Self::block_offset).
+    /// in CSS pixels relative to the inline root's border box.
     ///
-    /// `content` is the content box's size in device pixels. `contains` answers whether a node
-    /// is `key` or inside it, for backends that keep only each run's innermost node.
+    /// `origin` is where the content box starts in the border box, in CSS pixels, and `content`
+    /// its size in device pixels. `shift` is how far `position: relative` moves the element, in
+    /// CSS pixels, where the backend moves it ([`InlineLayout::SHIFTS_RELATIVE_INLINES`]).
+    /// `contains` answers whether a node is `key` or inside it, for backends that keep only each
+    /// run's innermost node.
     fn fragment_rects(
         &self,
         key: NodeKey,
+        origin: (f32, f32),
         content: kurbo::Size,
+        shift: kurbo::Vec2,
         contains: impl Fn(NodeKey) -> bool,
     ) -> impl Iterator<Item = Rect>;
 
@@ -424,14 +426,4 @@ pub trait InlineLayout<S: TextStyle>: InlineText {
 
     /// Returns the node of the float the content holds by `key`, where it is a node's.
     fn float_node(key: u64) -> Option<NodeKey>;
-
-    /// Paints the content: its inline boxes' backgrounds and borders, the selection highlight,
-    /// its text and decorations, and each atomic inline where its line paints it, into `sink`.
-    fn paint<K: TextSink, H: PaintHost<S>>(
-        &self,
-        sink: &mut K,
-        host: &H,
-        scratch: &RefCell<PaintScratch>,
-        frame: &PaintFrame,
-    );
 }

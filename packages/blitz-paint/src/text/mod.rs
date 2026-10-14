@@ -21,6 +21,8 @@ blitz_dom::cfg_text_backend! {
         pub(crate) use self::parley::{paint_inline_layout, paint_marker, paint_text_input};
     }
     winkin => {
+        mod host;
+        pub(crate) use self::host::DomPaintHost;
         mod winkin;
         use self::winkin::Scratch;
         pub(crate) use self::winkin::{paint_inline_layout, paint_marker, paint_text_input};

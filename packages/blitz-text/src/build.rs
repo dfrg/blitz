@@ -55,6 +55,10 @@ pub trait InlineBuilder<S: TextStyle> {
     /// [`open_box`](Self::open_box).
     const READS_FIRST_LINE: bool;
 
+    /// Whether the backend reads the `lang` attributes of the elements pushed. Where it does
+    /// not, the host hands it none.
+    const READS_LANG: bool;
+
     /// Returns the text pushed so far, where the backend keeps it.
     fn pushed_text(&self) -> &str;
 

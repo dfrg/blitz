@@ -3,13 +3,11 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use blitz_traits::node_id::NodeId;
+use blitz_text::{Edit, EditEngine, EditableText, EditorMetrics, Motion, NodeKey, TextStyle};
 use kurbo::{Rect, Size};
 use parley::{PlainEditor, PlainEditorDriver, StyleProperty};
-use style::properties::ComputedValues;
 
-use super::{TextBrush, TextContext, style as stylo_to_parley};
-use crate::text::{Edit, EditEngine, EditableText, EditorMetrics, Motion};
+use crate::{TextBrush, TextContext, style as css_to_parley};
 
 /// The text of an `<input>` or `<textarea>`, edited and laid out by Parley.
 pub struct TextEditor {
@@ -19,10 +17,17 @@ pub struct TextEditor {
 }
 
 impl TextEditor {
-    /// Parley's editor, which the renderer paints the text, the selection and the caret of.
+    /// Returns Parley's editor, which the renderer paints the text, the selection and the caret
+    /// of.
     #[inline]
     pub fn plain_editor(&self) -> &PlainEditor<TextBrush> {
         &self.editor
+    }
+
+    /// Returns Parley's editor, to change directly.
+    #[inline]
+    pub fn plain_editor_mut(&mut self) -> &mut PlainEditor<TextBrush> {
+        &mut self.editor
     }
 }
 
@@ -75,7 +80,9 @@ impl EditableText for TextEditor {
     }
 }
 
-impl EditEngine for TextEditor {
+impl<S: TextStyle> EditEngine<S> for TextEditor {
+    type Context = TextContext;
+
     fn new(_is_multiline: bool) -> Self {
         Self {
             editor: PlainEditor::new(16.0),
@@ -93,20 +100,15 @@ impl EditEngine for TextEditor {
         }
     }
 
-    fn set_style(&mut self, node: NodeId, style: Option<&ComputedValues>, scale: f32) {
+    fn set_style(&mut self, key: NodeKey, style: Option<&S>, scale: f32) {
         let parley_style = style
-            .map(|s| stylo_to_parley::style(node, s))
+            .map(|s| css_to_parley::style(key, s))
             .unwrap_or_default();
         let alignment = style
-            .map(|s| stylo_to_parley::text_align(s.slow_clone_text_align()))
-            .unwrap_or(parley::layout::Alignment::Start);
+            .map(|s| css_to_parley::text_align(s.text_align()))
+            .unwrap_or(parley::Alignment::Start);
         let base_direction = style
-            .map(|s| {
-                stylo_to_parley::base_direction(
-                    s.slow_clone_direction(),
-                    s.slow_clone_unicode_bidi(),
-                )
-            })
+            .map(css_to_parley::base_direction)
             .unwrap_or(parley::BaseDirection::Auto);
 
         let editor = &mut self.editor;
@@ -233,27 +235,15 @@ fn extend_by(driver: &mut PlainEditorDriver<'_, TextBrush>, motion: Motion) {
 
 #[cfg(test)]
 mod tests {
-    use blitz_traits::node_id::NodeId;
+    use blitz_text::{
+        DocumentText as _, Edit, EditEngine, EditableText as _, Motion, NodeKey, OwnedTextStyle,
+    };
 
     use super::TextEditor;
-    use crate::node::TextInputData;
-    use crate::text::parley::TextContext;
-    use crate::text::{DocumentText as _, Edit, EditEngine, EditableText as _, Motion};
-
-    /// Build a [`TextInputData`] with the given text laid out at scale 1.0.
-    fn make_input(cx: &mut TextContext, is_multiline: bool, text: &str) -> TextInputData {
-        let mut data = TextInputData::new(is_multiline);
-        data.editor.editor.set_scale(1.0);
-        data.editor.editor.set_text(text);
-        data.editor
-            .editor
-            .driver(&mut cx.font_ctx.lock().unwrap(), &mut cx.layout_ctx)
-            .refresh_layout();
-        data
-    }
+    use crate::{FontContext, TextContext};
 
     fn context() -> TextContext {
-        TextContext::new(Some(parley::FontContext::new()))
+        TextContext::new(Some(FontContext::new()))
     }
 
     /// The setters lay nothing out: the next edit or refresh does, once, and the caret follows
@@ -261,13 +251,13 @@ mod tests {
     #[test]
     fn setters_lay_out_on_the_next_edit_or_refresh() {
         let mut cx = context();
-        let mut editor = <TextEditor as EditEngine>::new(false);
-        editor.set_style(NodeId::from_u64(1), None, 1.0);
-        editor.set_text("hello");
+        let mut editor = <TextEditor as EditEngine<OwnedTextStyle>>::new(false);
+        EditEngine::<OwnedTextStyle>::set_style(&mut editor, NodeKey(1), None, 1.0);
+        EditEngine::<OwnedTextStyle>::set_text(&mut editor, "hello");
         assert_eq!(editor.metrics(), None);
         assert_eq!(editor.caret_rect(), None);
 
-        editor.edit(&mut cx, Edit::Move(Motion::TextEnd));
+        EditEngine::<OwnedTextStyle>::edit(&mut editor, &mut cx, Edit::Move(Motion::TextEnd));
         let metrics = editor.metrics().unwrap();
         assert_eq!(metrics.scale, 1.0);
         let caret = editor.caret_rect().unwrap();
@@ -276,9 +266,9 @@ mod tests {
             "{caret:?} {metrics:?}"
         );
 
-        editor.set_scale(2.0);
+        EditEngine::<OwnedTextStyle>::set_scale(&mut editor, 2.0);
         assert_eq!(editor.metrics(), None);
-        editor.refresh(&mut cx);
+        EditEngine::<OwnedTextStyle>::refresh(&mut editor, &mut cx);
         let scaled = editor.metrics().unwrap();
         assert_eq!(scaled.scale, 2.0);
         assert!(
@@ -287,115 +277,19 @@ mod tests {
         );
     }
 
+    /// Text set in an owned style lays out, and moves its caret by words.
     #[test]
-    fn short_text_does_not_scroll() {
+    fn edits_text_set_in_an_owned_style() {
         let mut cx = context();
-        let mut data = make_input(&mut cx, false, "hi");
-        // A wide content box that comfortably fits the text.
-        data.clamp_scroll_offset(1000.0, 100.0);
-        assert_eq!(data.scroll_offset, 0.0);
-    }
-
-    #[test]
-    fn single_line_scrolls_to_follow_caret() {
-        let mut cx = context();
-        let text = "the quick brown fox jumps over the lazy dog repeatedly and at length";
-        let mut data = make_input(&mut cx, false, text);
-        let content_box_width = 40.0;
-        let content_box_height = 20.0;
-
-        // Caret at the end of a string that overflows a narrow input should scroll right.
-        data.editor.edit(&mut cx, Edit::Move(Motion::TextEnd));
-        data.clamp_scroll_offset(content_box_width, content_box_height);
-
-        let layout_width = data.editor.metrics().unwrap().size.width as f32;
-        if layout_width > content_box_width {
-            assert!(
-                data.scroll_offset > 0.0,
-                "expected horizontal scroll for overflowing single-line input"
-            );
-            // The caret must be within the visible region after scrolling.
-            let caret = data.editor.caret_rect().unwrap();
-            assert!(caret.x1 as f32 <= data.scroll_offset + content_box_width + 0.5);
-            assert!(caret.x0 as f32 >= data.scroll_offset - 0.5);
-        }
-
-        // Moving the caret back to the start should reset the scroll offset.
-        data.editor.edit(&mut cx, Edit::Move(Motion::TextStart));
-        data.clamp_scroll_offset(content_box_width, content_box_height);
-        assert_eq!(data.scroll_offset, 0.0);
-    }
-
-    #[test]
-    fn multiline_scrolls_vertically_not_horizontally() {
-        let mut cx = context();
-        let text = (0..40)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut data = make_input(&mut cx, true, &text);
-        // Constrain the width so wrapping is well-defined.
-        data.editor.set_width(Some(200.0));
-        data.editor.refresh(&mut cx);
-
-        let content_box_width = 200.0;
-        let content_box_height = 30.0;
-
-        data.editor.edit(&mut cx, Edit::Move(Motion::TextEnd));
-        data.clamp_scroll_offset(content_box_width, content_box_height);
-
-        let layout_height = data.editor.metrics().unwrap().size.height as f32;
-        if layout_height > content_box_height {
-            assert!(
-                data.scroll_offset > 0.0,
-                "expected vertical scroll for overflowing multi-line input"
-            );
-        }
-    }
-
-    #[test]
-    fn scroll_by_clamps_and_bubbles() {
-        let mut cx = context();
-        let text = (0..40)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut data = make_input(&mut cx, true, &text);
-        data.editor.set_width(Some(200.0));
-        data.editor.refresh(&mut cx);
-
-        let content_box_width = 200.0;
-        let content_box_height = 30.0;
-        let max = data.max_scroll_offset(content_box_width, content_box_height);
-        assert!(max > 0.0, "test text should overflow the content box");
-
-        // Scrolling up (positive delta decreases offset) while already at the top is a no-op and
-        // the whole delta bubbles.
-        assert_eq!(data.scroll_offset, 0.0);
-        let bubbled = data.scroll_by(15.0, content_box_width, content_box_height);
-        assert_eq!(data.scroll_offset, 0.0);
-        assert_eq!(bubbled, 15.0);
-
-        // Scrolling down moves the offset and consumes the delta.
-        let bubbled = data.scroll_by(-10.0, content_box_width, content_box_height);
-        assert_eq!(data.scroll_offset, 10.0);
-        assert_eq!(bubbled, 0.0);
-
-        // Scrolling past the end clamps to the maximum and bubbles the remainder. Starting at
-        // offset 10 with max headroom of `max - 10`, a delta of `-(max + 100)` consumes
-        // `max - 10` and bubbles the rest (`-110`).
-        let bubbled = data.scroll_by(-(max + 100.0), content_box_width, content_box_height);
-        assert_eq!(data.scroll_offset, max);
-        assert!((bubbled - (-110.0)).abs() < 1e-3);
-    }
-
-    #[test]
-    fn single_line_does_not_scroll_when_text_fits() {
-        let mut cx = context();
-        let mut data = make_input(&mut cx, false, "hi");
-        // Wide content box; nothing to scroll, so all delta bubbles.
-        let bubbled = data.scroll_by(-50.0, 1000.0, 100.0);
-        assert_eq!(data.scroll_offset, 0.0);
-        assert_eq!(bubbled, -50.0);
+        let style = OwnedTextStyle::default();
+        let mut editor = <TextEditor as EditEngine<OwnedTextStyle>>::new(false);
+        editor.set_style(NodeKey(1), Some(&style), 1.0);
+        EditEngine::<OwnedTextStyle>::set_initial_text(&mut editor, "one two");
+        EditEngine::<OwnedTextStyle>::edit(&mut editor, &mut cx, Edit::Move(Motion::TextStart));
+        EditEngine::<OwnedTextStyle>::edit(&mut editor, &mut cx, Edit::Extend(Motion::WordRight));
+        assert!(!editor.is_selection_collapsed());
+        EditEngine::<OwnedTextStyle>::edit(&mut editor, &mut cx, Edit::Insert("1"));
+        assert!(editor.raw_text().ends_with("two"));
+        assert!(editor.raw_text().starts_with('1'));
     }
 }

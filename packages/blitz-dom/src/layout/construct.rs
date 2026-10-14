@@ -609,9 +609,16 @@ fn collect_layout_children_with_wrap(
 
             // TODO: fix display:contents
             if classification.all_inline {
-                let existing_layout = doc.nodes[container_node_id]
-                    .element_data_mut()
-                    .and_then(|el| el.inline_layout_data.take());
+                let existing_layout =
+                    doc.nodes[container_node_id]
+                        .element_data_mut()
+                        .and_then(|el| {
+                            let layout = el.inline_layout_data.take();
+                            if layout.is_none() {
+                                el.inline_span_cb_flags = stylo_taffy::StyleFlags::empty();
+                            }
+                            layout
+                        });
                 let layout = existing_layout.unwrap_or_default();
 
                 // Queue node for inline layout construction. Deferring construction of inline layouts to a
@@ -925,7 +932,7 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
 
     text_input_data.editor.set_style(
         input_element_id,
-        style.as_deref(),
+        style.as_ref(),
         doc.viewport.scale_f64() as f32,
     );
     // A single-line input never wraps, so its text is laid out now. A textarea's is laid out once
