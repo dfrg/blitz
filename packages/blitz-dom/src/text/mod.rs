@@ -43,14 +43,14 @@ pub use stylo::{StyloStyle, StyloStyleRef};
 #[cfg(text_parley)]
 pub use blitz_text_parley as parley;
 #[cfg(text_winkin)]
-pub mod winkin;
+pub use blitz_text_winkin as winkin;
 
 /// The text backend in use.
 #[cfg(text_parley)]
 pub type Backend = blitz_text_parley::Parley;
 /// The text backend in use.
 #[cfg(text_winkin)]
-pub type Backend = winkin::Winkin;
+pub type Backend = blitz_text_winkin::Winkin;
 
 /// The fonts documents lay out text with. Clones share their fonts.
 ///

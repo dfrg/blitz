@@ -6,6 +6,7 @@ members = [
     "packages/blitz-dom",
     "packages/blitz-text",
     "packages/blitz-text-parley",
+    "packages/blitz-text-winkin",
     "packages/blitz-html",
     "packages/blitz-net",
     "packages/blitz-paint",
@@ -52,6 +53,7 @@ blitz-shell = { version = "=0.3.0-beta.4", path = "./packages/blitz-shell", defa
 blitz-traits = { version = "=0.3.0-beta.4", path = "./packages/blitz-traits", default-features = false }
 blitz-text = { version = "=0.3.0-beta.4", path = "./packages/blitz-text", default-features = false }
 blitz-text-parley = { version = "=0.3.0-beta.4", path = "./packages/blitz-text-parley", default-features = false }
+blitz-text-winkin = { version = "=0.3.0-beta.4", path = "./packages/blitz-text-winkin", default-features = false }
 stylo_taffy = { version = "=0.3.0-beta.4", path = "./packages/stylo_taffy", default-features = false }
 dioxus-native = { version = "0.7.0", path = "./packages/dioxus-native", default-features = false }
 dioxus-native-dom = { version = "0.7.0", path = "./packages/dioxus-native-dom", default-features = false }
