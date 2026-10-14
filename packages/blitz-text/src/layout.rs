@@ -344,7 +344,10 @@ pub trait InlineLayout<S: TextStyle>: InlineText {
     /// Returns whether an element's style changing from `old` to `new` changes what the backend
     /// built from it, beyond what the host rebuilds for: then the inline formatting context it
     /// is in is built again.
-    fn style_change_rebuilds(old: &S, new: &S) -> bool {
+    ///
+    /// The styles may be of another type than the ones the content is built from: a style
+    /// engine may compare styles it does not keep.
+    fn style_change_rebuilds<T: TextStyle>(old: &T, new: &T) -> bool {
         let _ = (old, new);
         false
     }
