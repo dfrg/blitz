@@ -268,10 +268,16 @@ mod tests {
     };
 
     use super::TextEditor;
-    use crate::{FontContext, TextContext};
+    use crate::TextContext;
 
+    /// A context with the bundled bullet font, which needs no fonts of the platform's.
     fn context() -> TextContext {
-        TextContext::new(Some(FontContext::new()))
+        TextContext::new(None)
+    }
+
+    /// Text set in the bullet font.
+    fn bullet_style() -> OwnedTextStyle {
+        OwnedTextStyle::with_families([blitz_text::style::FontFamilyName::named("Bullet")])
     }
 
     /// The setters lay nothing out: the next edit or refresh does, once, and the caret follows
@@ -279,9 +285,10 @@ mod tests {
     #[test]
     fn setters_lay_out_on_the_next_edit_or_refresh() {
         let mut cx = context();
+        let style = bullet_style();
         let mut editor = <TextEditor as EditEngine<OwnedTextStyle>>::new(false);
-        EditEngine::<OwnedTextStyle>::set_style(&mut editor, NodeKey(1), None, 1.0);
-        EditEngine::<OwnedTextStyle>::set_text(&mut editor, "hello");
+        editor.set_style(NodeKey(1), Some(&style), 1.0);
+        EditEngine::<OwnedTextStyle>::set_text(&mut editor, "\u{2022}\u{2022}\u{2022}");
         assert_eq!(editor.metrics(), None);
         assert_eq!(editor.caret_rect(), None);
 
@@ -309,7 +316,7 @@ mod tests {
     #[test]
     fn edits_text_set_in_an_owned_style() {
         let mut cx = context();
-        let style = OwnedTextStyle::default();
+        let style = bullet_style();
         let mut editor = <TextEditor as EditEngine<OwnedTextStyle>>::new(false);
         editor.set_style(NodeKey(1), Some(&style), 1.0);
         EditEngine::<OwnedTextStyle>::set_initial_text(&mut editor, "one two");

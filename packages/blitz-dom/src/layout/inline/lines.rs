@@ -254,7 +254,6 @@ impl LayoutPassState<'_> {
                 clears: &clears,
                 placed: Vec::new(),
             };
-            crate::text::PERF_COUNTS[1].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             inline_layout.break_lines(&mut self.text, area, style.as_ref(), &mut room);
             room.placed
         };
@@ -815,7 +814,6 @@ impl LayoutPassState<'_> {
                 clears: lines.clears,
                 placed: Vec::new(),
             };
-            crate::text::PERF_COUNTS[1].fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             inline_layout.break_lines(&mut self.text, area, style.as_ref(), &mut room);
             room.placed
         };

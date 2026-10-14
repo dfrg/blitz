@@ -10,6 +10,8 @@ mod editor;
 mod fonts;
 mod paint;
 mod style;
+#[cfg(test)]
+mod tests;
 
 use blitz_text::style::{Clear, TextStyle};
 use blitz_text::{
