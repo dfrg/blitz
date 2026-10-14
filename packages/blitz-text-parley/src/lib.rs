@@ -8,6 +8,8 @@ mod fonts;
 mod layout;
 mod paint;
 mod style;
+#[cfg(test)]
+mod tests;
 
 #[cfg(feature = "parallel")]
 use std::cell::RefCell;

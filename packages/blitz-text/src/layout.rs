@@ -289,10 +289,16 @@ pub trait LineExclusions {
     fn rewind(&mut self, to: usize);
 }
 
-/// No floats.
-impl LineExclusions for () {
+/// No floats: every line has the room from zero to `width`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoExclusions {
+    /// How long a line is, in device pixels.
+    pub width: f32,
+}
+
+impl LineExclusions for NoExclusions {
     fn band(&self, _start: f32, _end: f32) -> (f32, f32) {
-        (0.0, f32::MAX)
+        (0.0, self.width)
     }
 
     fn below(&self, _top: f32) -> Option<f32> {
