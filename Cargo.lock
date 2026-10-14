@@ -1096,6 +1096,7 @@ name = "blitz-text-parley"
 version = "0.3.0-beta.4"
 dependencies = [
  "blitz-text",
+ "bytemuck",
  "kurbo",
  "parley",
  "rayon",
@@ -1110,6 +1111,7 @@ dependencies = [
  "blitz-text",
  "fontwich",
  "kurbo",
+ "linebender_resource_handle",
  "rayon",
  "skrifa",
  "thread_local",

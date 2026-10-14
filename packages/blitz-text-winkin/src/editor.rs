@@ -14,8 +14,12 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use blitz_text::{Edit, EditEngine, EditableText, EditorMetrics, Motion, TextStyle};
-use kurbo::{Rect, Size};
+use blitz_text::style::Color;
+use blitz_text::{
+    Edit, EditEngine, EditableText, EditorMetrics, Motion, PaintHost, PaintScratch, TextSink,
+    TextStyle,
+};
+use kurbo::{Affine, Rect, Size};
 use winkin::NodeKey;
 use winkin::config::PastLines;
 use winkin::selection::{Affinity, Granularity, MotionDirection, Position, Selection};
@@ -639,5 +643,28 @@ impl<S: TextStyle> EditEngine<S> for TextEditor<S> {
         if concealed && self.builds == builds {
             self.relayout(cx);
         }
+    }
+    fn paint<K: TextSink, H: PaintHost<S>>(
+        &self,
+        sink: &mut K,
+        host: &H,
+        scratch: &std::cell::RefCell<PaintScratch>,
+        focussed: bool,
+        caret_color: Color,
+        transform: Affine,
+        scale: f64,
+        key: blitz_text::NodeKey,
+    ) {
+        crate::paint::paint_text_input(
+            sink,
+            self,
+            host,
+            scratch,
+            focussed,
+            caret_color,
+            transform,
+            scale,
+            key,
+        );
     }
 }

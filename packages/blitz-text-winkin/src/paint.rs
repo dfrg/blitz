@@ -1,38 +1,31 @@
-//! Painting text laid out by winkin.
+//! Painting text laid out by winkin into a [`TextSink`].
 //!
 //! winkin hands out geometry and order, and nothing it hands out is drawn by
 //! it: each line's [`Line::paints`] walks what the line paints in Chrome's
 //! order, and this draws each with what the node it names is styled in.
+//!
+//! [`Line::paints`]: winkin::Line::paints
 
 use core::cell::{Cell, RefCell};
 
-use anyrender::{Glyph, PaintScene};
-use blitz_dom::node::Marker;
-use blitz_dom::text::EditableText as _;
-use blitz_dom::text::winkin::winkin;
-use blitz_dom::text::winkin::{COMPOSE_KEY, is_synthetic_key, line_frame, page};
-use blitz_dom::text::{MarkerLayout, TextEditor, TextLayout};
-use blitz_dom::text::InlineText as _;
-use blitz_dom::{BaseDocument, NodeId};
+use blitz_text::paint::{
+    DecorationRunGeometry, Glyph, GlyphRun, InlineBoxPaint, LineDecoration, PaintFrame, PaintHost,
+    PaintScratch, ResolvedDecoration, TextSink, composition_underline, decoration_size,
+    flush_line_decorations,
+};
+use blitz_text::style::{
+    BorderStyle, Color, CornerRadius, Corners, OutlineStyle, TextDecorationLine,
+    TextDecorationThickness, TextOrientation, TextStyle,
+};
+use blitz_text::{EditableText as _, InlineText as _, Marker, MarkerFrame, NodeKey};
 use kurbo::{Affine, Insets, Point, Rect, Vec2};
-use peniko::{Blob, Fill, FontData};
-use style::properties::ComputedValues;
-use style::servo_arc::Arc as ServoArc;
-use style::properties::generated::longhands::text_decoration_style::computed_value::T as TextDecorationStyle;
-use style::values::computed::{BorderCornerRadius, CSSPixelLength, TextDecorationLine};
-use style::values::generics::text::{GenericTextDecorationInset, GenericTextDecorationLength};
+use linebender_resource_handle::{Blob, FontData};
 use winkin::paint::{Decorates, Decoration, EmphasisMark, Paint};
 use winkin::selection::{SelectionRect, SelectionRectKind};
 use winkin::style::WritingMode;
-use winkin::{BoxFragment, FontInstance, Layout, NodeKey, RunOrientation, TextRun};
+use winkin::{BoxFragment, FontInstance, Layout, RunOrientation, TextRun};
 
-use crate::color::{Color, ToColorColor as _};
-use crate::kurbo_css::{CssBox, Edge, NonUniformRoundedRectRadii};
-use super::{DecorationRunGeometry, DrawTextContext, LineDecoration};
-
-/// What the winkin painter keeps between uses: nothing beyond the shared decoration buffers.
-#[derive(Default)]
-pub(super) struct Scratch;
+use crate::{COMPOSE_KEY, TextEditor, TextLayout, is_synthetic_key, line_frame, page};
 
 /// A box's four sides in a line's own terms, from its physical ones: its
 /// line-left and line-right, and its over and under sides.
@@ -71,78 +64,49 @@ impl<T> LineSides<T> {
     }
 }
 
-/// Lends the painter the shared text context for one draw at a time, so that
-/// an atomic inline painted between two draws can use it too.
-pub(crate) trait LendContext {
-    /// Calls `f` with the context.
-    fn lend<R>(&mut self, f: impl FnOnce(&mut DrawTextContext) -> R) -> R;
-}
-
-impl LendContext for &mut DrawTextContext {
-    fn lend<R>(&mut self, f: impl FnOnce(&mut DrawTextContext) -> R) -> R {
-        f(self)
-    }
-}
-
-impl LendContext for &RefCell<DrawTextContext> {
-    fn lend<R>(&mut self, f: impl FnOnce(&mut DrawTextContext) -> R) -> R {
-        f(&mut self.borrow_mut())
-    }
-}
-
 /// Paints every line of `layout`: the boxes, decorations, ruby annotations,
 /// text, emphasis marks and generated text of each, in Chrome's order.
 ///
 /// `transform` takes the content box's device pixels onto the scene, and
-/// `root` is the block the layout was built for. `paint_atomic` paints an
-/// atomic inline where the line paints it, after what comes before it in
-/// tree order and under what comes after.
+/// `root` is the block the layout was built for. Each atomic inline is painted
+/// where the line paints it, after what comes before it in tree order and under
+/// what comes after.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn paint<S: PaintScene>(
-    scene: &mut S,
-    text: &TextLayout,
+fn paint<S: TextStyle>(
+    sink: &mut impl TextSink,
+    text: &TextLayout<S>,
     layout: &Layout,
-    doc: &BaseDocument,
+    host: &impl PaintHost<S>,
     transform: Affine,
     content_width: f64,
     content_height: f64,
     scale: f64,
-    root: NodeId,
-    mut context: impl LendContext,
+    root: NodeKey,
+    scratch: &RefCell<PaintScratch>,
     selection: Option<(usize, usize)>,
-    paint_atomic: &mut impl FnMut(&mut S, NodeId),
 ) {
     let writing_mode = text.writing_mode();
     let page = page(writing_mode, content_width, content_height);
     let selection_rects: Vec<_> = selection
         .map(|(start, end)| layout.selection_rects(start..end).collect())
         .unwrap_or_default();
-    let root_key = root.as_u64();
-    let root_styles = doc
-        .get_node(root)
-        .and_then(|node| node.primary_styles())
-        .map(|styles| (*styles).clone());
+    let root_key = root.0;
+    let root_styles = host.style(root);
     // Whether glyphs stand upright on the line's central baseline, which
     // decorations are measured about.
     let centered = matches!(
         writing_mode,
         WritingMode::VerticalRl | WritingMode::VerticalLr
-    ) && root_styles.as_ref().is_none_or(|styles| {
-        styles.slow_clone_text_orientation() != style::computed_values::text_orientation::T::Sideways
-    });
-    let rtl = root_styles.as_ref().is_some_and(|styles| {
-        styles.slow_clone_direction() == style::computed_values::direction::T::Rtl
-    });
-    let propagated = blitz_dom::text::blitz_text::PaintHost::propagated_decorations(
-        &crate::text::DomPaintHost { doc },
-        blitz_dom::text::node_key(root),
-    )
-    .into_iter()
-    .map(|style| style.0)
-    .collect();
+    ) && root_styles
+        .as_ref()
+        .is_none_or(|styles| styles.text_orientation() != TextOrientation::Sideways);
+    let rtl = root_styles
+        .as_ref()
+        .is_some_and(|styles| styles.direction() == blitz_text::style::Direction::Rtl);
+    let propagated = host.propagated_decorations(root);
     let painter = Painter {
         text,
-        doc,
+        host,
         transform,
         containing: kurbo::Size::new(content_width / scale, content_height / scale),
         rtl,
@@ -214,15 +178,15 @@ pub(crate) fn paint<S: PaintScene>(
         let mut at = 0;
         while let Some(&item) = items.get(at) {
             if !highlighted && !matches!(item, Paint::Background(_) | Paint::Box(_)) {
-                paint_selection(scene, &highlights, None, frame, transform);
+                paint_selection(sink, &highlights, None, frame, transform);
                 highlighted = true;
             }
             match item {
                 Paint::Background(background) => {
-                    painter.paint_first_line_background(scene, frame, first, background);
+                    painter.paint_first_line_background(sink, frame, first, background);
                 }
-                Paint::Box(fragment) => painter.paint_box(scene, frame, &fragment, first),
-                Paint::Atomic(atomic) => paint_atomic(scene, NodeId::from_u64(atomic.key().0)),
+                Paint::Box(fragment) => painter.paint_box(sink, frame, &fragment, first),
+                Paint::Atomic(atomic) => sink.atomic(NodeKey(atomic.key().0)),
                 _ => {
                     // A run of text with its bars and marks: its highlight,
                     // then its text shadows and its decorations' shadows, the
@@ -230,7 +194,7 @@ pub(crate) fn paint<S: PaintScene>(
                     let end = run_end(&items, at);
                     let run = &items[at..end];
                     if let Some(index) = run.iter().position(|item| text_run(item).is_some()) {
-                        paint_selection(scene, &highlights, Some(at + index), frame, transform);
+                        paint_selection(sink, &highlights, Some(at + index), frame, transform);
                     }
                     let shadows = run
                         .iter()
@@ -248,22 +212,27 @@ pub(crate) fn paint<S: PaintScene>(
                                         .iter()
                                         .find(|span| span.0 == key)
                                         .map_or((0.0, 0.0), |span| (span.1, span.2));
-                                    context.lend(|context| {
-                                        painter.paint_decoration(
-                                            scene, frame, &bar, span, first, after, pass, context,
-                                        )
-                                    });
+                                    painter.paint_decoration(
+                                        sink,
+                                        frame,
+                                        &bar,
+                                        span,
+                                        first,
+                                        after,
+                                        pass,
+                                        &mut scratch.borrow_mut(),
+                                    );
                                 }
                                 Paint::Annotation(run) | Paint::Text(run) => {
-                                    painter.draw_run(scene, frame, &run, first, pass);
+                                    painter.draw_run(sink, frame, &run, first, pass);
                                     marked = Some(run);
                                 }
                                 Paint::Generated(run) => {
-                                    painter.draw_run(scene, frame, &run, first, pass);
+                                    painter.draw_run(sink, frame, &run, first, pass);
                                 }
                                 Paint::Emphasis(mark) => {
                                     painter.draw_emphasis(
-                                        scene,
+                                        sink,
                                         frame,
                                         &mark,
                                         marked.as_ref(),
@@ -282,7 +251,7 @@ pub(crate) fn paint<S: PaintScene>(
             at += 1;
         }
         if !highlighted {
-            paint_selection(scene, &highlights, None, frame, transform);
+            paint_selection(sink, &highlights, None, frame, transform);
         }
     }
 }
@@ -318,7 +287,7 @@ fn run_end(items: &[Paint<'_>], start: usize) -> usize {
 /// Paints the selection rectangles of `highlights` painted under the item at
 /// `under`, or, where it is `None`, those painted under no run.
 fn paint_selection(
-    scene: &mut impl PaintScene,
+    sink: &mut impl TextSink,
     highlights: &[(SelectionRect, Option<usize>)],
     under: Option<usize>,
     frame: Affine,
@@ -331,20 +300,14 @@ fn paint_selection(
             f64::from(rect.inline.right),
             f64::from(rect.block.under),
         );
-        scene.fill(
-            Fill::NonZero,
-            transform * frame,
-            crate::SELECTION_COLOR,
-            None,
-            &shape,
-        );
+        sink.selection(transform * frame, shape);
     }
 }
 
 /// What one layout is painted with.
-struct Painter<'a> {
-    text: &'a TextLayout,
-    doc: &'a BaseDocument,
+struct Painter<'a, S, H> {
+    text: &'a TextLayout<S>,
+    host: &'a H,
     transform: Affine,
     /// The block's content box in CSS pixels, which relative offsets'
     /// percentages are of.
@@ -356,10 +319,10 @@ struct Painter<'a> {
     scale: f64,
     writing_mode: WritingMode,
     root_key: u64,
-    root_styles: Option<ServoArc<ComputedValues>>,
+    root_styles: Option<S>,
     /// The styles of the boxes around the block whose decorations it
     /// draws, the outermost first.
-    propagated: Vec<ServoArc<ComputedValues>>,
+    propagated: Vec<S>,
     centered: bool,
     /// The text color painted last, and whose it was.
     color: Cell<Option<(u64, bool, Color)>>,
@@ -368,7 +331,7 @@ struct Painter<'a> {
     line: Cell<(Affine, f64)>,
 }
 
-impl Painter<'_> {
+impl<S: TextStyle, H: PaintHost<S>> Painter<'_, S, H> {
     /// What takes the content box's device pixels onto the scene for what
     /// `key` paints: moved as `position: relative` moves its inline boxes.
     fn transform(&self, key: u64) -> Affine {
@@ -383,11 +346,8 @@ impl Painter<'_> {
         let shift = if is_synthetic_key(key) {
             Vec2::ZERO
         } else {
-            blitz_dom::text::relative_shift(
-                self.doc.get_node(NodeId::from_u64(key)),
-                self.containing,
-                self.rtl,
-            )
+            self.host
+                .relative_shift(NodeKey(key), self.containing, self.rtl)
         };
         let transform = if shift == Vec2::ZERO {
             self.transform
@@ -398,11 +358,9 @@ impl Painter<'_> {
         transform
     }
 
-    /// The computed style `key` is painted in, on the first line or not.
-    fn styles(&self, key: u64, first: bool) -> Option<ServoArc<ComputedValues>> {
-        self.text
-            .computed_style(&crate::text::DomPaintHost { doc: self.doc }, key, first)
-            .map(|style| style.0)
+    /// The style `key` is painted in, on the first line or not.
+    fn styles(&self, key: u64, first: bool) -> Option<S> {
+        self.text.computed_style(self.host, key, first)
     }
 
     /// The color of `key`'s text, on the first line or not.
@@ -415,7 +373,7 @@ impl Painter<'_> {
         }
         let color = self
             .styles(key, first)
-            .map_or(Color::BLACK, |styles| styles.slow_clone_color().as_srgb_color());
+            .map_or(Color::BLACK, |styles| styles.color());
         self.color.set(Some((key, first, color)));
         color
     }
@@ -424,16 +382,9 @@ impl Painter<'_> {
     /// own, and for the block, first those its ancestors propagate to it,
     /// and on the first line its `::first-line` as well, whose decorations
     /// do not inherit into the block's.
-    fn decorating_styles(
-        &self,
-        key: u64,
-        first: bool,
-    ) -> impl Iterator<Item = ServoArc<ComputedValues>> + '_ {
+    fn decorating_styles(&self, key: u64, first: bool) -> impl Iterator<Item = S> + '_ {
         let (propagated, own, first_line) = if key == self.root_key {
-            let first_line = first
-                .then(|| self.text.first_line_style_of(key))
-                .flatten()
-                .map(|style| style.0);
+            let first_line = first.then(|| self.text.first_line_style_of(key)).flatten();
             (&self.propagated[..], self.root_styles.clone(), first_line)
         } else {
             (&[][..], self.styles(key, first), None)
@@ -441,9 +392,9 @@ impl Painter<'_> {
         propagated.iter().cloned().chain(own).chain(first_line)
     }
 
-    /// Which decoration lines `key` draws: the question [`Line::paints`]
+    /// Which decoration lines `key` draws: the question [`winkin::Line::paints`]
     /// asks of the block and each box.
-    fn decorates(&self, key: NodeKey, first: bool) -> Decorates {
+    fn decorates(&self, key: winkin::NodeKey, first: bool) -> Decorates {
         if key.0 & COMPOSE_KEY != 0 {
             return Decorates::BeforeText;
         }
@@ -451,10 +402,10 @@ impl Painter<'_> {
         let mut after = false;
         for styles in self.decorating_styles(key.0, first) {
             // A `display: contents` element is no box, and decorates nothing.
-            if styles.slow_clone_display().is_contents() {
+            if styles.display().is_contents() {
                 continue;
             }
-            let lines = styles.slow_clone_text_decoration_line();
+            let lines = styles.text_decoration_line();
             before |=
                 lines.intersects(TextDecorationLine::UNDERLINE | TextDecorationLine::OVERLINE);
             after |= lines.contains(TextDecorationLine::LINE_THROUGH);
@@ -469,10 +420,10 @@ impl Painter<'_> {
 
     /// Paints the block's `::first-line` background behind the first line's
     /// content, where it sets one. The block's own background is its box's,
-    /// which Blitz paints with the box.
+    /// which the host paints with the box.
     fn paint_first_line_background(
         &self,
-        scene: &mut impl PaintScene,
+        sink: &mut impl TextSink,
         frame: Affine,
         first: bool,
         background: winkin::paint::Background<'_>,
@@ -480,14 +431,10 @@ impl Painter<'_> {
         if !first {
             return;
         }
-        let Some(styles) = self.text.first_line_style_of(self.root_key).map(|style| style.0) else {
+        let Some(styles) = self.text.first_line_style_of(self.root_key) else {
             return;
         };
-        let color = styles
-            .get_background()
-            .background_color
-            .resolve_to_absolute(&styles.slow_clone_color())
-            .as_srgb_color();
+        let color = styles.background_color();
         if color.components[3] <= 0.0 {
             return;
         }
@@ -498,14 +445,14 @@ impl Painter<'_> {
             f64::from(inline.right),
             f64::from(block.under),
         );
-        scene.fill(Fill::NonZero, self.transform * frame, color, None, &rect);
+        sink.fill(self.transform * frame, rect, color);
     }
 
     /// Draws a stretch of an inline box: its background and its borders,
     /// and no border on a side where the box goes on past it.
     fn paint_box(
         &self,
-        scene: &mut impl PaintScene,
+        sink: &mut impl TextSink,
         frame: Affine,
         fragment: &BoxFragment<'_>,
         first: bool,
@@ -514,38 +461,33 @@ impl Painter<'_> {
         let Some(styles) = self.styles(key, first) else {
             return;
         };
-        let current = styles.slow_clone_color();
-        let background = styles
-            .get_background()
-            .background_color
-            .resolve_to_absolute(&current)
-            .as_srgb_color();
-        let border = styles.get_border();
+        let background = styles.background_color();
         let scale = self.scale;
         // Snapped as the layout took them: a width under a pixel to one, and
         // any other down to a whole one.
-        let width = |width: &style::values::computed::BorderSideWidth,
-                     style: style::values::specified::border::BorderStyle| {
-            let width = f64::from(width.0.to_f32_px()) * scale;
+        let width = |width: f32, style: BorderStyle| {
+            let width = f64::from(width) * scale;
             if style.none_or_hidden() || width <= 0.0 {
                 0.0
             } else {
                 width.floor().max(1.0)
             }
         };
+        let (border_widths, border_styles) = (styles.border_widths(), styles.border_styles());
         let widths = LineSides::from_physical(
             self.writing_mode,
-            width(&border.border_top_width, border.border_top_style),
-            width(&border.border_right_width, border.border_right_style),
-            width(&border.border_bottom_width, border.border_bottom_style),
-            width(&border.border_left_width, border.border_left_style),
+            width(border_widths.top, border_styles.top),
+            width(border_widths.right, border_styles.right),
+            width(border_widths.bottom, border_styles.bottom),
+            width(border_widths.left, border_styles.left),
         );
+        let border_colors = styles.border_colors();
         let colors = LineSides::from_physical(
             self.writing_mode,
-            &border.border_top_color,
-            &border.border_right_color,
-            &border.border_bottom_color,
-            &border.border_left_color,
+            border_colors.top,
+            border_colors.right,
+            border_colors.bottom,
+            border_colors.left,
         );
         let (inline, block) = (fragment.inline(), fragment.block());
         let border_box = Rect::new(
@@ -579,91 +521,52 @@ impl Painter<'_> {
         // being the writing mode's; in a vertical line a corner's horizontal
         // radius runs across the line.
         let [left_over, right_over, right_under, left_under] =
-            line_corners(self.writing_mode, border);
+            line_corners(self.writing_mode, styles.border_radii());
         let across_is_horizontal = self.writing_mode != WritingMode::HorizontalTb;
-        let radius = |corner: &BorderCornerRadius, open: bool| {
+        let radius = |corner: CornerRadius, open: bool| {
             if open {
                 return Vec2::ZERO;
             }
-            let resolve = |length: &style::values::computed::LengthPercentage, of: f64| {
-                scale
-                    * f64::from(
-                        length
-                            .resolve(CSSPixelLength::new((of / scale) as f32))
-                            .px(),
-                    )
+            let resolve = |length: blitz_text::style::LengthPercentage, of: f64| {
+                scale * f64::from(length.resolve((of / scale) as f32))
             };
             let (physical_width, physical_height) = if across_is_horizontal {
                 (border_box.height(), border_box.width())
             } else {
                 (border_box.width(), border_box.height())
             };
-            let horizontal = resolve(&corner.0.width.0, physical_width);
-            let vertical = resolve(&corner.0.height.0, physical_height);
+            let horizontal = resolve(corner.width, physical_width);
+            let vertical = resolve(corner.height, physical_height);
             if across_is_horizontal {
                 Vec2::new(vertical, horizontal)
             } else {
                 Vec2::new(horizontal, vertical)
             }
         };
-        let radii = NonUniformRoundedRectRadii {
-            top_left: radius(left_over, open_left),
-            top_right: radius(right_over, open_right),
-            bottom_right: radius(right_under, open_right),
-            bottom_left: radius(left_under, open_left),
-        };
-        let css_box = CssBox::new(border_box, insets, Insets::ZERO, 0.0, radii);
-        if background.components[3] > 0.0 {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                background,
-                None,
-                &css_box.border_box_path(),
-            );
-        }
-        let edges = [
-            (Edge::Top, insets.y0, colors.over),
-            (Edge::Right, insets.x1, colors.right),
-            (Edge::Bottom, insets.y1, colors.under),
-            (Edge::Left, insets.x0, colors.left),
-        ]
-        .map(|(edge, width, color)| (edge, width, color.resolve_to_absolute(&current).as_srgb_color()));
-        // Edges of one color around square corners are one ring, so no seam shows where two meet.
-        let drawn = edges.iter().filter(|(_, width, _)| *width > 0.0);
-        let mut colors_drawn = drawn.clone().map(|(_, _, color)| *color);
-        let one_color = colors_drawn
-            .next()
-            .filter(|first| colors_drawn.all(|color| color == *first));
-        match one_color {
-            Some(color) if !css_box.has_border_radius() => {
-                let mut ring = css_box.border_box_path();
-                ring.extend(css_box.padding_box_path());
-                scene.fill(Fill::EvenOdd, transform, color, None, &ring);
-            }
-            _ => {
-                for (edge, _, color) in drawn {
-                    let shape = css_box.border_edge_shape(*edge);
-                    scene.fill(Fill::NonZero, transform, *color, None, &shape);
-                }
-            }
-        }
+        let radii = [
+            radius(left_over, open_left),
+            radius(right_over, open_right),
+            radius(right_under, open_right),
+            radius(left_under, open_left),
+        ];
         // The outline round the stretch's border box, as a block's is drawn. Chrome draws one
         // round an empty inline box too.
-        let outline = styles.get_outline();
-        if let style::values::computed::OutlineStyle::BorderStyle(outline_style) =
-            outline.outline_style
-        {
-            let outline_width = width(&outline.outline_width, outline_style);
-            if outline_width > 0.0 {
-                let color = outline
-                    .outline_color
-                    .resolve_to_absolute(&current)
-                    .as_srgb_color();
-                let outlined = CssBox::new(border_box, insets, Insets::ZERO, outline_width, radii);
-                scene.fill(Fill::NonZero, transform, color, None, &outlined.outline());
+        let outline = match styles.outline_style() {
+            OutlineStyle::Border(outline_style) => {
+                let outline_width = width(styles.outline_width(), outline_style);
+                (outline_width > 0.0).then(|| (outline_width, styles.outline_color()))
             }
-        }
+            OutlineStyle::Auto => None,
+        };
+        sink.inline_box(&InlineBoxPaint {
+            transform,
+            border_box,
+            widths: insets,
+            radii,
+            background,
+            colors: [colors.over, colors.right, colors.under, colors.left],
+            outline,
+        });
     }
 
     /// Draws one bar of a decoration, with the decoration `bar`'s box sets.
@@ -671,14 +574,14 @@ impl Painter<'_> {
     #[allow(clippy::too_many_arguments)]
     fn paint_decoration(
         &self,
-        scene: &mut impl PaintScene,
+        sink: &mut impl TextSink,
         frame: Affine,
         bar: &Decoration,
         span: (f64, f64),
         first: bool,
         after_text: bool,
         pass: Option<usize>,
-        context: &mut DrawTextContext,
+        scratch: &mut PaintScratch,
     ) {
         let inline = bar.inline();
         let key = bar.key().0;
@@ -690,42 +593,50 @@ impl Painter<'_> {
             ascent: bar.ascent(),
             descent: bar.descent(),
             underline_gap: bar.underline_gap(),
-            thickness: bar.underline_thickness(),
             font_underline_gap: bar.underline_gap_from_font(),
             font_thickness: bar.underline_thickness_from_font(),
             font_size: bar.font_size(),
             centered: self.centered,
         };
         self.shadowed(
-            scene,
+            sink,
             pass,
-            self.shadow_styles(key, first).as_deref(),
-            self.color(key, first),
+            self.shadow_styles(key, first).as_ref(),
             self.transform(key),
             (geometry.left, geometry.right),
             None,
-            |scene, placed, color| {
+            |sink, placed, color| {
                 if key & COMPOSE_KEY != 0 {
                     if !after_text {
-                        context.draw_winkin_composition_underline(
-                            scene,
+                        let deco =
+                            composition_underline(color.unwrap_or_else(|| self.color(key, first)));
+                        draw_bar(
+                            sink,
+                            scratch,
                             placed * frame,
                             self.scale,
+                            deco,
                             geometry,
-                            color.unwrap_or_else(|| self.color(key, first)),
+                            false,
                         );
                     }
                     return;
                 }
                 for styles in self.decorating_styles(key, first) {
-                    context.draw_winkin_decoration(
-                        scene,
+                    let Some(mut deco) = ResolvedDecoration::of(&styles) else {
+                        continue;
+                    };
+                    if let Some(color) = color {
+                        deco.color = color;
+                    }
+                    draw_bar(
+                        sink,
+                        scratch,
                         placed * frame,
                         self.scale,
-                        &styles,
+                        deco,
                         geometry,
                         after_text,
-                        color,
                     );
                 }
             },
@@ -733,7 +644,7 @@ impl Painter<'_> {
     }
 
     /// The style whose text shadows what `key` paints casts.
-    fn shadow_styles(&self, key: u64, first: bool) -> Option<ServoArc<ComputedValues>> {
+    fn shadow_styles(&self, key: u64, first: bool) -> Option<S> {
         self.styles(key, first)
     }
 
@@ -746,7 +657,7 @@ impl Painter<'_> {
             _ => return None,
         };
         let styles = self.shadow_styles(key.0, first)?;
-        Some(styles.get_inherited_text().text_shadow.0.len())
+        Some(styles.text_shadow_count())
     }
 
     /// Draws what `draw` paints: in the foreground pass, where `pass` is
@@ -756,73 +667,48 @@ impl Painter<'_> {
     ///
     /// `draw` is handed the transform taking the content box's device pixels
     /// onto the scene, `placed` moved by the shadow, and the color to paint
-    /// in where it is not its own; `current` is what `currentcolor` is.
-    /// `inline` is where along the line what it paints starts and ends,
-    /// which a blurred shadow is drawn around.
+    /// in where it is not its own; a shadow's `currentcolor` is the style's own color, as the
+    /// text's is. `inline` is where along the line what it
+    /// paints starts and ends, which a blurred shadow is drawn around.
     #[allow(clippy::too_many_arguments)]
-    fn shadowed<S: PaintScene>(
+    fn shadowed<K: TextSink>(
         &self,
-        scene: &mut S,
+        sink: &mut K,
         pass: Option<usize>,
-        styles: Option<&ComputedValues>,
-        current: Color,
+        styles: Option<&S>,
         placed: Affine,
         inline: (f64, f64),
         own: Option<Color>,
-        mut draw: impl FnMut(&mut S, Affine, Option<Color>),
+        mut draw: impl FnMut(&mut K, Affine, Option<Color>),
     ) {
         let Some(index) = pass else {
-            draw(scene, placed, own);
+            draw(sink, placed, own);
             return;
         };
-        if let Some(styles) = styles
-            && let Some(shadow) = styles.get_inherited_text().text_shadow.0.get(index)
-        {
-            {
-                let color = if shadow.color.is_currentcolor() {
-                    current
-                } else {
-                    shadow
-                        .color
-                        .resolve_to_absolute(&styles.slow_clone_color())
-                        .as_srgb_color()
-                };
-                if color.components[3] <= 0.0 {
-                    return;
-                }
-                let offset = Vec2::new(
-                    f64::from(shadow.horizontal.px()),
-                    f64::from(shadow.vertical.px()),
-                ) * self.scale;
-                let moved = placed * Affine::translate(offset);
-                // A blur radius is twice the deviation of its Gaussian.
-                let deviation = f64::from(shadow.blur.0.px()) * self.scale / 2.0;
-                if deviation > 0.0 {
-                    // Glyphs reach past the line box by up to about its
-                    // height, and the blur past them.
-                    let (frame, height) = self.line.get();
-                    let reach = 3.0 * deviation + height;
-                    let clip = frame
-                        .transform_rect_bbox(Rect::new(inline.0, 0.0, inline.1, height))
-                        .inflate(reach, reach);
-                    let filter = anyrender::filters::Filter::single(
-                        anyrender::filters::FilterEffect::blur(deviation as f32),
-                    );
-                    scene.push_layer(
-                        Fill::NonZero,
-                        peniko::Mix::Normal,
-                        1.0,
-                        moved,
-                        &clip,
-                        Some(std::sync::Arc::new(filter)),
-                        None,
-                    );
-                    draw(scene, moved, Some(color));
-                    scene.pop_layer();
-                } else {
-                    draw(scene, moved, Some(color));
-                }
-            }
+        let Some(shadow) = styles.and_then(|styles| styles.text_shadow().nth(index)) else {
+            return;
+        };
+        let color = shadow.color;
+        if color.components[3] <= 0.0 {
+            return;
+        }
+        let offset = Vec2::new(f64::from(shadow.x), f64::from(shadow.y)) * self.scale;
+        let moved = placed * Affine::translate(offset);
+        // A blur radius is twice the deviation of its Gaussian.
+        let deviation = f64::from(shadow.blur) * self.scale / 2.0;
+        if deviation > 0.0 {
+            // Glyphs reach past the line box by up to about its height, and
+            // the blur past them.
+            let (frame, height) = self.line.get();
+            let reach = 3.0 * deviation + height;
+            let clip = frame
+                .transform_rect_bbox(Rect::new(inline.0, 0.0, inline.1, height))
+                .inflate(reach, reach);
+            sink.push_blur(moved, clip, deviation as f32);
+            draw(sink, moved, Some(color));
+            sink.pop_blur();
+        } else {
+            draw(sink, moved, Some(color));
         }
     }
 
@@ -832,7 +718,7 @@ impl Painter<'_> {
     /// is not turned with the line: only the point it is drawn at is.
     fn draw_run(
         &self,
-        scene: &mut impl PaintScene,
+        sink: &mut impl TextSink,
         frame: Affine,
         run: &TextRun<'_>,
         first: bool,
@@ -857,7 +743,6 @@ impl Painter<'_> {
             let lean = Affine::skew(-f64::from(skew.to_radians().tan()), 0.0);
             glyph_transform = Some(glyph_transform.map_or(lean, |squeeze| squeeze * lean));
         }
-        // The renderer walks the glyphs more than once, so the walk is cloned.
         let glyphs = || {
             run.glyphs().map(move |glyph| {
                 if upright {
@@ -887,14 +772,13 @@ impl Painter<'_> {
             (0.0, 0.0)
         };
         self.shadowed(
-            scene,
+            sink,
             pass,
-            self.styles(key, first).as_deref(),
-            color,
+            self.styles(key, first).as_ref(),
             self.transform(key),
             inline,
             Some(color),
-            |scene, placed, color| {
+            |sink, placed, color| {
                 // Transparent text draws nothing, colour glyphs included, as
                 // Chrome takes a colour glyph's alpha from its paint's. Its
                 // shadows still draw.
@@ -902,17 +786,17 @@ impl Painter<'_> {
                 if color.components[3] <= 0.0 {
                     return;
                 }
-                scene.draw_glyphs(
-                    &data,
-                    font.size,
-                    true,
-                    font.coords,
-                    embolden(&font),
-                    Fill::NonZero,
-                    &anyrender::Paint::from(color),
-                    1.0,
-                    if upright { placed } else { placed * frame },
-                    glyph_transform,
+                sink.glyphs(
+                    &GlyphRun {
+                        font: &data,
+                        size: font.size,
+                        hint: true,
+                        coords: font.coords,
+                        embolden: embolden(&font),
+                        color,
+                        transform: if upright { placed } else { placed * frame },
+                        glyph_transform,
+                    },
                     glyphs(),
                 );
             },
@@ -927,7 +811,7 @@ impl Painter<'_> {
     /// centred on the point winkin gives.
     fn draw_emphasis(
         &self,
-        scene: &mut impl PaintScene,
+        sink: &mut impl TextSink,
         frame: Affine,
         mark: &EmphasisMark,
         run: Option<&TextRun<'_>>,
@@ -939,15 +823,8 @@ impl Painter<'_> {
             return;
         };
         // The marks are laid out per element: a text node's is its parent's.
-        let element = self
-            .doc
-            .get_node(NodeId::from_u64(key))
-            .and_then(|node| match node.data {
-                blitz_dom::NodeData::Text(_) => node.parent,
-                _ => Some(node.id),
-            });
-        let Some(layout) = element.and_then(|element| self.text.emphasis_mark(element.as_u64()))
-        else {
+        let element = self.host.element(NodeKey(key));
+        let Some(layout) = element.and_then(|element| self.text.emphasis_mark(element.0)) else {
             return;
         };
         let Some(line) = layout.lines().next() else {
@@ -964,17 +841,9 @@ impl Painter<'_> {
             })
             .unwrap_or(mark.size);
         let ratio = if built > 0.0 { mark.size / built } else { 1.0 };
-        // `currentcolor` is the text's own, which on the first line may be
-        // its `::first-line` color.
-        let text_color = self.color(key, first);
-        let emphasis_color = &styles.get_inherited_text().text_emphasis_color;
-        let color = if emphasis_color.is_currentcolor() {
-            text_color
-        } else {
-            emphasis_color
-                .resolve_to_absolute(&styles.slow_clone_color())
-                .as_srgb_color()
-        };
+        // `currentcolor` is the text's own, which on the first line is its `::first-line`
+        // color: `styles` is the style there.
+        let color = styles.text_emphasis_color();
         // A mark on combined text turns with the line, as Chrome draws it: the unit is set
         // upright, but its mark is the line's.
         let upright = run.is_some_and(|run| run.orientation() == RunOrientation::Upright);
@@ -998,14 +867,13 @@ impl Painter<'_> {
             y: (origin.y + f64::from((y - baseline) * ratio)) as f32,
         };
         self.shadowed(
-            scene,
+            sink,
             pass,
             Some(&styles),
-            text_color,
             self.transform(key),
             (f64::from(mark.x - mark.size), f64::from(mark.x + mark.size)),
             Some(color),
-            |scene, placed, color| {
+            |sink, placed, color| {
                 for item in line.paints(|_| Decorates::None) {
                     let Paint::Text(mark_run) = item else {
                         continue;
@@ -1013,17 +881,17 @@ impl Painter<'_> {
                     let Some(font) = mark_run.font() else {
                         continue;
                     };
-                    scene.draw_glyphs(
-                        &font_data(&font),
-                        font.size * ratio,
-                        true,
-                        font.coords,
-                        embolden(&font),
-                        Fill::NonZero,
-                        &anyrender::Paint::from(color.unwrap_or(Color::BLACK)),
-                        1.0,
-                        placed * frame_after,
-                        None,
+                    sink.glyphs(
+                        &GlyphRun {
+                            font: &font_data(&font),
+                            size: font.size * ratio,
+                            hint: true,
+                            coords: font.coords,
+                            embolden: embolden(&font),
+                            color: color.unwrap_or(Color::BLACK),
+                            transform: placed * frame_after,
+                            glyph_transform: None,
+                        },
                         mark_run.glyphs().map(|glyph| Glyph {
                             id: glyph.id,
                             ..place(glyph.x, glyph.y)
@@ -1038,15 +906,12 @@ impl Painter<'_> {
 /// A box's corners in a line's own terms: at its line-left end on its over
 /// side, at its line-right end on its over side, then under it at its
 /// line-right and line-left ends.
-fn line_corners(
-    writing_mode: WritingMode,
-    border: &style::properties::style_structs::Border,
-) -> [&BorderCornerRadius; 4] {
+fn line_corners(writing_mode: WritingMode, radii: Corners<CornerRadius>) -> [CornerRadius; 4] {
     let (top_left, top_right, bottom_right, bottom_left) = (
-        &border.border_top_left_radius,
-        &border.border_top_right_radius,
-        &border.border_bottom_right_radius,
-        &border.border_bottom_left_radius,
+        radii.top_left,
+        radii.top_right,
+        radii.bottom_right,
+        radii.bottom_left,
     );
     match writing_mode {
         WritingMode::HorizontalTb => [top_left, top_right, bottom_right, bottom_left],
@@ -1085,105 +950,86 @@ fn embolden(font: &FontInstance<'_>) -> Vec2 {
 }
 
 /// Paints an inline formatting context laid out by winkin.
-///
-/// `transform` takes the content box's device pixels, moved down by the layout's block offset,
-/// onto the scene, and `content_size` is the content box's size in device pixels.
-/// `paint_atomic` paints each atomic inline in its place in the line's paint order.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn paint_inline_layout<S: PaintScene>(
-    scene: &mut S,
-    text_layout: &TextLayout,
-    doc: &BaseDocument,
-    transform: Affine,
-    content_size: kurbo::Size,
-    scale: f64,
-    root: NodeId,
-    selection: Option<(usize, usize)>,
-    context: &RefCell<DrawTextContext>,
-    paint_atomic: &mut impl FnMut(&mut S, NodeId),
+pub(crate) fn paint_inline_layout<S: TextStyle>(
+    sink: &mut impl TextSink,
+    text_layout: &TextLayout<S>,
+    host: &impl PaintHost<S>,
+    scratch: &RefCell<PaintScratch>,
+    frame: &PaintFrame,
 ) {
     let Some(layout) = text_layout.layout() else {
         return;
     };
     paint(
-        scene,
+        sink,
         text_layout,
         layout,
-        doc,
-        transform,
-        content_size.width,
-        content_size.height,
-        scale,
-        root,
-        context,
-        selection,
-        paint_atomic,
+        host,
+        frame.transform,
+        frame.content_size.width,
+        frame.content_size.height,
+        frame.scale,
+        frame.root,
+        scratch,
+        frame.selection,
     );
 }
 
 /// Paints the text of an `<input>` or `<textarea>`, and its selection and caret where it is
 /// focussed.
-///
-/// `transform` takes the text's device pixels onto the scene.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn paint_text_input(
-    scene: &mut impl PaintScene,
-    editor: &TextEditor,
+pub(crate) fn paint_text_input<S: TextStyle>(
+    sink: &mut impl TextSink,
+    editor: &TextEditor<S>,
+    host: &impl PaintHost<S>,
+    scratch: &RefCell<PaintScratch>,
     focussed: bool,
     caret_color: Color,
-    doc: &BaseDocument,
     transform: Affine,
     scale: f64,
-    node_id: NodeId,
-    context: &mut DrawTextContext,
+    key: NodeKey,
 ) {
     let text_layout = editor.text_layout();
     let Some(layout) = text_layout.layout() else {
         return;
     };
-    let size = editor.metrics().map(|metrics| metrics.size).unwrap_or_default();
+    let size = editor
+        .metrics()
+        .map(|metrics| metrics.size)
+        .unwrap_or_default();
     let selection = editor.layout_selection_range();
     let selection = (focussed && !selection.is_empty()).then_some((selection.start, selection.end));
     paint(
-        scene,
+        sink,
         text_layout,
         layout,
-        doc,
+        host,
         transform,
         size.width,
         size.height,
         scale,
-        node_id,
-        context,
+        key,
+        scratch,
         selection,
-        &mut |_, _| {},
     );
     if focussed
         && editor.is_selection_collapsed()
         && let Some(caret) = editor.caret_rect()
     {
-        scene.fill(Fill::NonZero, transform, caret_color, None, &caret);
+        sink.fill(transform, caret, caret_color);
     }
 }
 
 /// Paints a list item's outside marker, right-aligned before its border box, on the baseline of
 /// the item's first line of text.
-///
-/// `pos` is the item's content box origin in CSS pixels, and `transform` takes the element's CSS
-/// pixels, scaled to device pixels, onto the scene.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn paint_marker(
-    scene: &mut impl PaintScene,
+pub(crate) fn paint_marker<S: TextStyle>(
+    sink: &mut impl TextSink,
     marker: &Marker,
-    marker_layout: &MarkerLayout,
-    text_layout: Option<&TextLayout>,
-    item_layout: &taffy::Layout,
-    doc: &BaseDocument,
-    pos: Point,
-    transform: Affine,
-    scale: f64,
-    node_id: NodeId,
-    context: &mut DrawTextContext,
+    marker_layout: &TextLayout<S>,
+    text_layout: Option<&TextLayout<S>>,
+    host: &impl PaintHost<S>,
+    scratch: &RefCell<PaintScratch>,
+    frame: &MarkerFrame,
 ) {
     let Some(layout) = marker_layout.layout() else {
         return;
@@ -1193,18 +1039,18 @@ pub(crate) fn paint_marker(
     };
     let metrics = line.metrics();
     let marker_scale = marker_layout.scale();
-    // Right align and pad the bullet when rendering outside
+    // A bullet is right-aligned and padded.
     let x_padding = match marker {
         Marker::Char(_) => 8.0,
         Marker::String(_) => 0.0,
     };
-    // Outside markers are placed outside the list item's border box
-    // (`pos` is the origin of its content box)
+    // An outside marker is placed outside the list item's border box, from the origin of its
+    // content box.
     let x_offset = -((metrics.left + metrics.width) / marker_scale
         + x_padding
-        + item_layout.padding.left
-        + item_layout.border.left);
-    // Align the marker with the baseline of the first line of text in the list item
+        + frame.padding_left
+        + frame.border_left);
+    // The marker sits on the baseline of the first line of text in the list item.
     let y_offset = text_layout
         .and_then(|text_layout| {
             let first = text_layout.layout()?.lines().next()?.metrics();
@@ -1212,175 +1058,122 @@ pub(crate) fn paint_marker(
         })
         .unwrap_or(0.0);
     let pos = Point {
-        x: pos.x + f64::from(x_offset),
-        y: pos.y + f64::from(y_offset),
+        x: frame.origin.x + f64::from(x_offset),
+        y: frame.origin.y + f64::from(y_offset),
     };
-    let transform = transform * Affine::translate((pos.x * scale, pos.y * scale));
+    let scale = frame.scale;
+    let transform = frame.transform * Affine::translate((pos.x * scale, pos.y * scale));
     paint(
-        scene,
+        sink,
         marker_layout,
         layout,
-        doc,
+        host,
         transform,
         0.0,
         0.0,
         scale,
-        node_id,
-        context,
+        frame.key,
+        scratch,
         None,
-        &mut |_, _| {},
     );
 }
 
 /// One bar of a decoration on a line of winkin-laid text, and the font
 /// geometry it is drawn with, in device pixels along and across its line.
 #[derive(Copy, Clone)]
-pub(crate) struct WinkinDecoration {
+struct WinkinDecoration {
     /// Where it starts and ends along the line.
-    pub(crate) left: f64,
-    pub(crate) right: f64,
+    left: f64,
+    right: f64,
     /// Where its box's bars on the line start and end, which
     /// `text-decoration-inset` is taken from.
-    pub(crate) span: (f64, f64),
+    span: (f64, f64),
     /// Its box's baseline, and its primary font's ascent and descent about it.
-    pub(crate) baseline: f32,
-    pub(crate) ascent: f32,
-    pub(crate) descent: f32,
-    /// Where an `auto` underline's top is under the baseline, and how thick
-    /// an `auto` line is: Chrome's, as winkin works them out.
-    pub(crate) underline_gap: f32,
-    pub(crate) thickness: f32,
+    baseline: f32,
+    ascent: f32,
+    descent: f32,
+    /// Where an `auto` underline's top is under the baseline: Chrome's, as winkin works it out.
+    underline_gap: f32,
     /// The font's own underline: where its top is under the baseline, and
     /// how thick it is, for `from-font`. Each is the `auto` one where the
     /// font gives none.
-    pub(crate) font_underline_gap: f32,
-    pub(crate) font_thickness: f32,
+    font_underline_gap: f32,
+    font_thickness: f32,
     /// Its box's computed font size, scaled where `text-fit` scales its line.
-    pub(crate) font_size: f32,
+    font_size: f32,
     /// Whether the metrics are measured about a central baseline, as a
     /// vertical line's are.
-    pub(crate) centered: bool,
+    centered: bool,
 }
 
-/// Painting the decorations of lines laid out by winkin, with the same
-/// resolution and drawing as the lines laid out by Parley.
-impl DrawTextContext {
-    /// Paints one bar of the decoration `styles` sets, as a decorating box:
-    /// its underline and overline where `after_text` is false, and its line
-    /// through where it is true. `color`, where given, is the color it is
-    /// drawn in instead of its own: a shadow's.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_winkin_decoration(
-        &mut self,
-        scene: &mut impl PaintScene,
-        transform: Affine,
-        scale: f64,
-        styles: &style::properties::ComputedValues,
-        bar: WinkinDecoration,
-        after_text: bool,
-        color: Option<Color>,
-    ) {
-        let Some(mut deco) = super::resolve_decoration(styles) else {
-            return;
-        };
-        if let Some(color) = color {
-            deco.color = color;
-        }
-        self.draw_winkin_bar(scene, transform, scale, deco, bar, after_text);
-    }
-
-    /// Paints the underline under the text an input method is composing, in `color`: a solid
-    /// `auto` underline.
-    pub(crate) fn draw_winkin_composition_underline(
-        &mut self,
-        scene: &mut impl PaintScene,
-        transform: Affine,
-        scale: f64,
-        bar: WinkinDecoration,
-        color: Color,
-    ) {
-        let deco = super::ResolvedDecoration {
-            line: TextDecorationLine::UNDERLINE,
-            style: TextDecorationStyle::Solid,
-            color,
-            thickness: GenericTextDecorationLength::Auto,
-            underline_offset: None,
-            underline_under: false,
-            underline_from_font: false,
-            inset: GenericTextDecorationInset::Auto,
-        };
-        self.draw_winkin_bar(scene, transform, scale, deco, bar, false);
-    }
-
-    /// Paints one bar of `deco`: its underline and overline where `after_text` is false, and its
-    /// line through where it is true.
-    fn draw_winkin_bar(
-        &mut self,
-        scene: &mut impl PaintScene,
-        transform: Affine,
-        scale: f64,
-        deco: super::ResolvedDecoration,
-        bar: WinkinDecoration,
-        after_text: bool,
-    ) {
-        // An `auto` underline's gap is half its thickness, rounded up and at
-        // least a pixel, as Chrome's `ComputeUnderlineOffsetAuto` takes it:
-        // the thickness drawn, not the `auto` one, where the two differ.
-        let underline_offset = if deco.underline_from_font {
-            -bar.font_underline_gap
-        } else if matches!(deco.thickness, GenericTextDecorationLength::Auto) {
-            -bar.underline_gap
-        } else {
-            let size = super::decoration_size(
-                &deco.thickness,
-                bar.font_thickness,
-                f64::from(bar.font_size) / scale,
-                scale,
-            );
-            -(size / 2.0).ceil().max(1.0)
-        };
-        self.deco_boxes.clear();
-        self.deco_boxes.push(LineDecoration {
-            node_id: NodeId::from_u64(0),
-            deco,
-            min_x: bar.span.0,
-            max_x: bar.span.1,
-            piece: Some((bar.left, bar.right)),
-            own: Some(DecorationRunGeometry {
-                baseline: bar.baseline,
-                ascent: bar.ascent,
-                descent: bar.descent,
-                // Placed from the baseline, up: an underline's top is its gap
-                // under it. `from-font` takes the font's own place.
-                underline_offset,
-                // Read only for `from-font` thickness: `auto` and lengths are
-                // worked out from the font size.
-                underline_size: bar.font_thickness,
-                strikethrough_size: bar.font_thickness,
-                // winkin's ascent is already the one the platform's browser
-                // draws an overline against: its line metrics are.
-                font: None,
-                font_size: bar.font_size,
-                css_font_size: f64::from(bar.font_size) / scale,
-                centered: bar.centered,
-            }),
-            first: None,
-        });
-        let drawn = if after_text {
-            TextDecorationLine::LINE_THROUGH
-        } else {
-            TextDecorationLine::UNDERLINE | TextDecorationLine::OVERLINE
-        };
-        super::flush_line_decorations(
-            scene,
-            transform,
+/// Paints one bar of `deco`: its underline and overline where `after_text` is false, and its line
+/// through where it is true.
+fn draw_bar(
+    sink: &mut impl TextSink,
+    scratch: &mut PaintScratch,
+    transform: Affine,
+    scale: f64,
+    deco: ResolvedDecoration,
+    bar: WinkinDecoration,
+    after_text: bool,
+) {
+    // An `auto` underline's gap is half its thickness, rounded up and at
+    // least a pixel, as Chrome's `ComputeUnderlineOffsetAuto` takes it:
+    // the thickness drawn, not the `auto` one, where the two differ.
+    let underline_offset = if deco.underline_from_font {
+        -bar.font_underline_gap
+    } else if matches!(deco.thickness, TextDecorationThickness::Auto) {
+        -bar.underline_gap
+    } else {
+        let size = decoration_size(
+            &deco.thickness,
+            bar.font_thickness,
+            f64::from(bar.font_size) / scale,
             scale,
-            &self.deco_boxes,
-            &mut self.win_ascent_ratios,
-            NodeId::from_u64(0),
-            bar.baseline,
-            drawn,
         );
-        self.deco_boxes.clear();
-    }
+        -(size / 2.0).ceil().max(1.0)
+    };
+    scratch.deco_boxes.clear();
+    scratch.deco_boxes.push(LineDecoration {
+        key: NodeKey(0),
+        deco,
+        min_x: bar.span.0,
+        max_x: bar.span.1,
+        piece: Some((bar.left, bar.right)),
+        own: Some(DecorationRunGeometry {
+            baseline: bar.baseline,
+            ascent: bar.ascent,
+            descent: bar.descent,
+            // Placed from the baseline, up: an underline's top is its gap
+            // under it. `from-font` takes the font's own place.
+            underline_offset,
+            // Read only for `from-font` thickness: `auto` and lengths are
+            // worked out from the font size.
+            underline_size: bar.font_thickness,
+            strikethrough_size: bar.font_thickness,
+            // winkin's ascent is already the one the platform's browser
+            // draws an overline against: its line metrics are.
+            font: None,
+            font_size: bar.font_size,
+            css_font_size: f64::from(bar.font_size) / scale,
+            centered: bar.centered,
+        }),
+        first: None,
+    });
+    let drawn = if after_text {
+        TextDecorationLine::LINE_THROUGH
+    } else {
+        TextDecorationLine::UNDERLINE | TextDecorationLine::OVERLINE
+    };
+    flush_line_decorations(
+        sink,
+        transform,
+        scale,
+        &scratch.deco_boxes,
+        &mut scratch.win_ascent_ratios,
+        NodeKey(0),
+        bar.baseline,
+        drawn,
+    );
+    scratch.deco_boxes.clear();
 }
