@@ -29,6 +29,9 @@ use parlance::{FontFeature, FontStyle, FontVariation, FontWeight, FontWidth, Tag
 
 use crate::node::{InlineContent, InlineTextHit, Node};
 
+mod stylo;
+pub use stylo::{StyloStyle, StyloStyleRef};
+
 #[cfg(text_parley)]
 pub mod parley;
 #[cfg(text_winkin)]
