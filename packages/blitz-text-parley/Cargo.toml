@@ -26,5 +26,6 @@ blitz-text = { workspace = true }
 parley = { workspace = true, features = ["bytemuck"] }
 skrifa = { workspace = true }
 kurbo = { workspace = true }
+bytemuck = { workspace = true }
 rayon = { workspace = true, optional = true }
 thread_local = { workspace = true, optional = true }

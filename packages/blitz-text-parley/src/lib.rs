@@ -6,6 +6,7 @@ mod build;
 mod editor;
 mod fonts;
 mod layout;
+mod paint;
 mod style;
 
 #[cfg(feature = "parallel")]
@@ -15,8 +16,8 @@ use std::sync::{Arc, Mutex};
 
 use blitz_text::{
     Backend, ContentItem, ContentWidths, FloatSide, InlineLayout, InlineSource, InlineText,
-    LastBaseline, LineArea, LineExclusions, LineFlow, LinesExtent, LinesInputs, NodeKey, Placement,
-    TextHit, TextStyle,
+    LastBaseline, LineArea, LineExclusions, LineFlow, LinesExtent, LinesInputs, NodeKey,
+    PaintFrame, PaintHost, PaintScratch, Placement, TextHit, TextSink, TextStyle,
 };
 use kurbo::{Rect, Vec2};
 use parley::{
@@ -481,5 +482,15 @@ impl<S: TextStyle> InlineLayout<S> for TextLayout {
     #[inline]
     fn float_node(key: u64) -> Option<NodeKey> {
         Some(NodeKey(key))
+    }
+
+    fn paint<K: TextSink, H: PaintHost<S>>(
+        &self,
+        sink: &mut K,
+        host: &H,
+        scratch: &std::cell::RefCell<PaintScratch>,
+        frame: &PaintFrame,
+    ) {
+        paint::paint_inline_layout(sink, self, host, scratch, frame);
     }
 }

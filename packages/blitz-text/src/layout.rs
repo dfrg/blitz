@@ -1,11 +1,13 @@
 //! Laying out an inline formatting context, and reading it back.
 
+use core::cell::RefCell;
 use core::ops::Range;
 
 use kurbo::Rect;
 
 use crate::NodeKey;
 use crate::build::{FloatSide, InlineSource};
+use crate::paint::{PaintFrame, PaintHost, PaintScratch, TextSink};
 use crate::style::{Sides, TextStyle};
 
 /// A width and a height, in the units the method names.
@@ -426,4 +428,14 @@ pub trait InlineLayout<S: TextStyle>: InlineText {
 
     /// Returns the node of the float the content holds by `key`, where it is a node's.
     fn float_node(key: u64) -> Option<NodeKey>;
+
+    /// Paints the content into `sink`: its inline boxes' backgrounds and borders, the selection
+    /// highlight, its text and decorations, and each atomic inline where its line paints it.
+    fn paint<K: TextSink, H: PaintHost<S>>(
+        &self,
+        sink: &mut K,
+        host: &H,
+        scratch: &RefCell<PaintScratch>,
+        frame: &PaintFrame,
+    );
 }

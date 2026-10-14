@@ -18,12 +18,14 @@ use crate::filters::convert_filters;
 use crate::kurbo_css::NonUniformRoundedRectRadii;
 use crate::layers::LayerManager;
 use crate::sizing::compute_object_fit;
-use crate::text::DrawTextContext;
 use anyrender::{PaintScene, Scene};
 use blitz_dom::node::{
     ListItemLayout, ListItemLayoutPosition, NodeData, RasterImageData, TextInputData, TextNodeData,
 };
 use blitz_dom::text::InlineText as _;
+use blitz_dom::text::blitz_text::{EditEngine, InlineLayout, MarkerEngine};
+use blitz_dom::text::blitz_text::{MarkerFrame, PaintFrame, PaintScratch};
+use blitz_dom::text::{StyloStyle, key_node, node_key};
 use blitz_dom::{BaseDocument, ElementData, Node, NodeId, local_name};
 use blitz_traits::devtools::DevtoolSettings;
 
@@ -121,7 +123,7 @@ pub struct BlitzDomPainter<'dom, 'a> {
     pub(crate) scrollbar_drag_target: Option<blitz_dom::node::ScrollbarRef>,
     pub(crate) layer_manager: LayerManager,
     /// Reusable scratch allocations shared by all text layouts painted for this document.
-    pub(crate) draw_text_context: RefCell<DrawTextContext>,
+    pub(crate) draw_text_context: RefCell<PaintScratch>,
     /// Cached selection ranges for O(1) lookup: node_id -> (start_offset, end_offset)
     pub(crate) selection_ranges: HashMap<NodeId, (usize, usize)>,
 
@@ -162,7 +164,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
             #[cfg(feature = "scrollbars")]
             scrollbar_drag_target: dom.scrollbar_drag_target(),
             layer_manager,
-            draw_text_context: RefCell::new(DrawTextContext::default()),
+            draw_text_context: RefCell::new(PaintScratch::default()),
             selection_ranges,
             custom_widget_scenes,
         }
@@ -897,20 +899,27 @@ impl ElementCx<'_, '_> {
                     painted.push(child_id);
                 }
             };
-            crate::text::paint_inline_layout(
+            let mut sink = crate::text::SceneSink {
                 scene,
-                text_layout,
-                self.context.dom,
-                transform,
-                Size::new(
-                    self.frame.content_box.width(),
-                    self.frame.content_box.height(),
-                ),
-                self.scale,
-                self.node.id,
-                self.context.selection_ranges.get(&self.node.id).copied(),
+                atomic: |scene: &mut S, key| paint_atomic(scene, key_node(key)),
+            };
+            InlineLayout::<StyloStyle>::paint(
+                &**text_layout,
+                &mut sink,
+                &crate::text::DomPaintHost {
+                    doc: self.context.dom,
+                },
                 &self.context.draw_text_context,
-                &mut paint_atomic,
+                &PaintFrame {
+                    transform,
+                    content_size: Size::new(
+                        self.frame.content_box.width(),
+                        self.frame.content_box.height(),
+                    ),
+                    scale: self.scale,
+                    root: node_key(self.node.id),
+                    selection: self.context.selection_ranges.get(&self.node.id).copied(),
+                },
             );
         }
         painted
@@ -946,17 +955,21 @@ impl ElementCx<'_, '_> {
                 ColorOrAuto::Color(caret_color) => caret_color.resolve_to_absolute(&color),
             };
 
-            let mut draw_text_context = self.context.draw_text_context.borrow_mut();
-            crate::text::paint_text_input(
-                scene,
-                &input_data.editor,
+            EditEngine::<StyloStyle>::paint(
+                &*input_data.editor,
+                &mut crate::text::SceneSink {
+                    scene,
+                    atomic: |_: &mut _, _| {},
+                },
+                &crate::text::DomPaintHost {
+                    doc: self.context.dom,
+                },
+                &self.context.draw_text_context,
                 self.node.is_focussed(),
                 caret_color.as_srgb_color(),
-                self.context.dom,
                 transform,
                 self.scale,
-                self.node.id,
-                &mut draw_text_context,
+                node_key(self.node.id),
             );
         }
     }
@@ -967,19 +980,27 @@ impl ElementCx<'_, '_> {
             position: ListItemLayoutPosition::Outside(layout),
         }) = self.list_item
         {
-            let mut draw_text_context = self.context.draw_text_context.borrow_mut();
-            crate::text::paint_marker(
-                scene,
+            let item_layout = self.node.final_layout();
+            MarkerEngine::<StyloStyle>::paint(
+                &**layout,
+                &mut crate::text::SceneSink {
+                    scene,
+                    atomic: |_: &mut _, _| {},
+                },
+                &crate::text::DomPaintHost {
+                    doc: self.context.dom,
+                },
+                &self.context.draw_text_context,
                 marker,
-                layout,
                 self.element.inline_layout_data.as_deref(),
-                self.node.final_layout(),
-                self.context.dom,
-                pos,
-                self.transform,
-                self.scale,
-                self.node.id,
-                &mut draw_text_context,
+                &MarkerFrame {
+                    origin: pos,
+                    padding_left: item_layout.padding.left,
+                    border_left: item_layout.border.left,
+                    transform: self.transform,
+                    scale: self.scale,
+                    key: node_key(self.node.id),
+                },
             );
         }
     }

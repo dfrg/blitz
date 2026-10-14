@@ -113,6 +113,12 @@ pub trait TextSink {
     /// Paints the atomic inline `key` where the line paints it, after what comes before it in
     /// tree order and under what comes after.
     fn atomic(&mut self, key: NodeKey);
+
+    /// Returns whether the renderer grows every glyph's outline and leaves it unhinted, as some
+    /// platforms draw text, where the backend leaves that to it.
+    fn emboldens(&self) -> bool {
+        false
+    }
 }
 
 /// What a backend asks of the host's document while it paints.
