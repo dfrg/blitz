@@ -29,7 +29,7 @@
 //  - `tracing`: Enables tracing support.
 
 pub const DEFAULT_CSS: &str = include_str!("../assets/default.css");
-pub const BULLET_FONT: &[u8] = include_bytes!("../assets/moz-bullet-font.otf");
+pub use blitz_text::BULLET_FONT;
 
 /// The DOM implementation.
 ///
