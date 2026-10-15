@@ -631,6 +631,21 @@ flags! {
     }
 }
 
+/// A computed `text-decoration-skip-spaces`: the spaces decorations skip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextDecorationSkipSpaces {
+    None,
+    /// Every space, and the spacing beside it.
+    All,
+    /// The spaces at a line's start.
+    Start,
+    /// The spaces at a line's end.
+    End,
+    /// The spaces at a line's start and end, the initial value.
+    #[default]
+    StartEnd,
+}
+
 /// One shadow of a computed `text-shadow`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextShadow {
