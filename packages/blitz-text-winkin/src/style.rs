@@ -873,7 +873,12 @@ fn text_fit(fit: css::TextFit) -> TextFit {
 /// `alternate` alone is `alternate over`; the initial value is Chrome's `over`, so the two are
 /// told apart.
 pub(super) fn ruby_position(style: &impl TextStyle) -> RubyPosition {
-    match style.ruby_position() {
+    ruby_position_value(style.ruby_position())
+}
+
+/// `position`, a computed `ruby-position`, as winkin sets it.
+pub(super) fn ruby_position_value(position: css::RubyPosition) -> RubyPosition {
+    match position {
         css::RubyPosition::AlternateOver => RubyPosition::Alternate,
         css::RubyPosition::AlternateUnder => RubyPosition::AlternateUnder,
         css::RubyPosition::Over => RubyPosition::Over,
