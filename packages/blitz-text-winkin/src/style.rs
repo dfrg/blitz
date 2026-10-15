@@ -24,7 +24,7 @@ use winkin::style::{
     TextOverflow, TextSpacingTrim, TextTransform, TextWrapMode, TextWrapStyle, UnicodeBidi,
     VerticalAlign, WhiteSpaceCollapse, WordBreak, WritingMode,
 };
-use winkin::style::{TextFit, TextFitKind, TextFitTarget};
+use winkin::style::{TextDecorationSkipSpaces, TextFit, TextFitKind, TextFitTarget};
 use winkin::{ComputedBlockStyle, ComputedStyle};
 
 /// Adds the features `style`'s `font-variant-alternates` resolves to through the document's
@@ -549,6 +549,13 @@ fn text_group<S: TextStyle>(style: &S, scale: f32, language: Option<Language>) -
             }
         },
         emphasis,
+        decoration_skip_spaces: match style.text_decoration_skip_spaces() {
+            css::TextDecorationSkipSpaces::None => TextDecorationSkipSpaces::None,
+            css::TextDecorationSkipSpaces::All => TextDecorationSkipSpaces::All,
+            css::TextDecorationSkipSpaces::Start => TextDecorationSkipSpaces::Start,
+            css::TextDecorationSkipSpaces::End => TextDecorationSkipSpaces::End,
+            css::TextDecorationSkipSpaces::StartEnd => TextDecorationSkipSpaces::StartEnd,
+        },
         ..TextGroup::INITIAL
     }
 }

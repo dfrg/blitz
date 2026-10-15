@@ -65,10 +65,11 @@ use style::values::specified::font::VariantAlternates;
 use style::values::specified::text::{
     HyphenateCharacter, RubyPosition as StyloRubyPosition, TextAutospace as StyloTextAutospace,
     TextBoxEdge as StyloTextBoxEdge, TextBoxTrim as StyloTextBoxTrim,
-    TextDecorationLine as StyloTextDecorationLine, TextEdgeKeyword, TextEmphasisFillMode,
-    TextEmphasisPosition as StyloTextEmphasisPosition, TextEmphasisShapeKeyword,
-    TextJustify as StyloTextJustify, TextOverflowSide as StyloTextOverflowSide,
-    TextUnderlinePosition as StyloTextUnderlinePosition,
+    TextDecorationLine as StyloTextDecorationLine,
+    TextDecorationSkipSpaces as StyloTextDecorationSkipSpaces, TextEdgeKeyword,
+    TextEmphasisFillMode, TextEmphasisPosition as StyloTextEmphasisPosition,
+    TextEmphasisShapeKeyword, TextJustify as StyloTextJustify,
+    TextOverflowSide as StyloTextOverflowSide, TextUnderlinePosition as StyloTextUnderlinePosition,
 };
 
 use crate::util::ToColorColor as _;
@@ -829,6 +830,25 @@ impl<P: Deref<Target = ComputedValues> + Clone + Send + Sync> TextStyle for Styl
                 (StyloTextUnderlinePosition::RIGHT, U::RIGHT),
             ]
         )
+    }
+
+    #[inline]
+    fn text_decoration_skip_spaces(&self) -> text::TextDecorationSkipSpaces {
+        use text::TextDecorationSkipSpaces as S;
+        let skip = self.0.get_inherited_text().text_decoration_skip_spaces;
+        // `all` holds both edges.
+        if skip.contains(StyloTextDecorationSkipSpaces::ALL) {
+            return S::All;
+        }
+        match (
+            skip.contains(StyloTextDecorationSkipSpaces::START),
+            skip.contains(StyloTextDecorationSkipSpaces::END),
+        ) {
+            (true, true) => S::StartEnd,
+            (true, false) => S::Start,
+            (false, true) => S::End,
+            (false, false) => S::None,
+        }
     }
 
     #[inline]

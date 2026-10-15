@@ -188,6 +188,9 @@ pub trait TextStyle: Clone + Send + Sync {
     /// Returns `text-underline-position`.
     fn text_underline_position(&self) -> TextUnderlinePosition;
 
+    /// Returns `text-decoration-skip-spaces`.
+    fn text_decoration_skip_spaces(&self) -> TextDecorationSkipSpaces;
+
     /// Returns the shadows of `text-shadow`, the topmost first.
     fn text_shadow(&self) -> impl Iterator<Item = TextShadow> + Clone;
 
@@ -404,6 +407,7 @@ pub trait TextStyle: Clone + Send + Sync {
             && self.text_security() == other.text_security()
             && self.text_underline_offset() == other.text_underline_offset()
             && self.text_underline_position() == other.text_underline_position()
+            && self.text_decoration_skip_spaces() == other.text_decoration_skip_spaces()
             && self.text_shadow().eq(other.text_shadow())
             && self.ruby_position() == other.ruby_position()
             && self.ruby_align() == other.ruby_align()
