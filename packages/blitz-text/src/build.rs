@@ -2,7 +2,7 @@
 //! and the host's side of a build.
 
 use crate::NodeKey;
-use crate::style::{Clear, TextStyle};
+use crate::style::{Clear, RubyPosition, TextStyle};
 
 /// What a box opened in an inline formatting context's content is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,13 +10,14 @@ pub enum SpanKind {
     /// A non-atomic inline box.
     Span,
     /// A `display: contents` element, which has no box but whose children inherit from it, or an
-    /// annotation container that holds `<rt>`s of its own.
+    /// annotation container outside ruby that holds `<rt>`s of its own.
     Contents,
     /// A ruby container, `<ruby>`, where the backend sets ruby.
     Ruby,
     /// A ruby annotation, `<rt>` or an `<rtc>` holding no `<rt>`, where the backend sets ruby.
-    /// `in_container` where it is an `<rt>` inside an `<rtc>`.
-    Annotation { in_container: bool },
+    /// `container` is the `ruby-position` of the `<rtc>` it is in, which sets its side, where it
+    /// is in one.
+    Annotation { container: Option<RubyPosition> },
 }
 
 /// The side of the block a float goes to.
@@ -116,6 +117,26 @@ pub trait InlineBuilder<S: TextStyle> {
     /// Pushes the line break opportunity of the `<wbr>` element `key`, and returns whether the
     /// backend took it. Where it did not, the element is pushed as a span.
     fn break_opportunity(&mut self, key: NodeKey) -> bool;
+
+    /// Opens an anonymous ruby container or annotation, `kind`, which CSS Ruby's box fixup makes:
+    /// a box with no node and no edges, set in `style`, an `<rtc>`'s, or else in the style of the
+    /// box opened last, and on the block's first formatted line in `first_line`. `lang` is the
+    /// `<rtc>`'s own `lang` attribute. Close it with [`close_box`](Self::close_box). Only a
+    /// backend that sets ruby is asked.
+    fn open_anonymous_box(
+        &mut self,
+        style: Option<&S>,
+        kind: SpanKind,
+        first_line: Option<&S>,
+        lang: Option<&str>,
+    ) {
+        let _ = (style, kind, first_line, lang);
+    }
+
+    /// Starts the next column of the ruby container opened last, so that an annotation pushed
+    /// next, with no base content since the last annotation, goes over an empty base of its own.
+    /// Only a backend that sets ruby is asked.
+    fn start_ruby_column(&mut self) {}
 }
 
 /// The block an inline formatting context belongs to, as the host styles it.

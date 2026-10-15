@@ -77,11 +77,16 @@ pub const PIECE_KEYS: u64 = 3 << 58;
 /// The number [`PIECE_KEYS`] gives the first piece of an editor's text.
 const PIECE_SHIFT: u32 = 58;
 
+/// The key of an anonymous ruby container or annotation, which CSS Ruby's box fixup makes and
+/// which has no node.
+pub const ANONYMOUS_KEY: u64 = 1 << 57;
+
 /// Returns whether `key` names something the backend made rather than one of the host's nodes:
-/// a first letter, an inside marker, the composing text or a piece of an editor's text.
+/// a first letter, an inside marker, the composing text, a piece of an editor's text or an
+/// anonymous ruby box.
 #[inline]
 pub fn is_synthetic_key(key: u64) -> bool {
-    key & (FIRST_LETTER_KEY | MARKER_KEY | COMPOSE_KEY | PIECE_KEYS) != 0
+    key & (FIRST_LETTER_KEY | MARKER_KEY | COMPOSE_KEY | PIECE_KEYS | ANONYMOUS_KEY) != 0
 }
 
 /// What a document keeps for its text under winkin: the fonts winkin chooses from, and the
@@ -691,9 +696,9 @@ impl<S: TextStyle, V: FontFeatureValues> InlineBuilder<S> for WinkinBuilder<'_, 
         // An `<rt>` in an `<rtc>` takes the side of its container, which
         // `ruby-position` applies to.
         let position = match kind {
-            SpanKind::Annotation { in_container: true } => {
-                Some(style::ruby_position(&self.parent().computed))
-            }
+            SpanKind::Annotation {
+                container: Some(position),
+            } => Some(style::ruby_position_value(position)),
             _ => None,
         };
         if kind == SpanKind::Ruby {
@@ -732,6 +737,57 @@ impl<S: TextStyle, V: FontFeatureValues> InlineBuilder<S> for WinkinBuilder<'_, 
             }
         }
         self.parents.push(Parent { computed, language });
+    }
+
+    /// Opens an anonymous ruby container or annotation, keyed by no node, with
+    /// no edges, in the style of the `<rtc>` or else of the box it is in.
+    fn open_anonymous_box(
+        &mut self,
+        style: Option<&S>,
+        kind: SpanKind,
+        first_line: Option<&S>,
+        lang: Option<&str>,
+    ) {
+        let computed = style.unwrap_or(&self.parent().computed).clone();
+        let language = self.language(lang);
+        let key = NodeKey(ANONYMOUS_KEY);
+        {
+            let lists = style::FontLists::of(&computed, self.feature_values);
+            let own = unboxed(style::computed_style(
+                &lists, &computed, self.scale, language,
+            ));
+            let first_line_lists =
+                first_line.map(|computed| style::FontLists::of(computed, self.feature_values));
+            let first_line_style = match (first_line, &first_line_lists) {
+                (Some(computed), Some(lists)) => Some(unboxed(style::computed_style(
+                    lists, computed, self.scale, language,
+                ))),
+                _ => None,
+            };
+            let builder = &mut self.builder;
+            match kind {
+                SpanKind::Annotation {
+                    container: Some(position),
+                } => builder.open_annotation_with_position(
+                    key,
+                    &own,
+                    first_line_style.as_ref(),
+                    style::ruby_position_value(position),
+                ),
+                SpanKind::Annotation { container: None } => {
+                    builder.open_annotation(key, &own, first_line_style.as_ref())
+                }
+                SpanKind::Ruby => builder.open_ruby(key, &own, first_line_style.as_ref()),
+                SpanKind::Span | SpanKind::Contents => {
+                    builder.open_box(key, &own, first_line_style.as_ref())
+                }
+            }
+        }
+        self.parents.push(Parent { computed, language });
+    }
+
+    fn start_ruby_column(&mut self) {
+        self.builder.start_column();
     }
 
     fn close_box(&mut self, kind: SpanKind) {
