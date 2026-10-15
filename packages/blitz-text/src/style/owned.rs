@@ -105,6 +105,7 @@ pub struct OwnedTextStyle {
     pub text_fit: TextFit,
     pub text_underline_offset: Option<LengthPercentage>,
     pub text_underline_position: TextUnderlinePosition,
+    pub text_decoration_skip_spaces: TextDecorationSkipSpaces,
     pub text_shadow: Arc<[TextShadow]>,
     pub ruby_position: RubyPosition,
     pub ruby_align: RubyAlign,
@@ -209,6 +210,7 @@ impl Default for OwnedTextStyle {
             text_fit: TextFit::default(),
             text_underline_offset: None,
             text_underline_position: TextUnderlinePosition::empty(),
+            text_decoration_skip_spaces: TextDecorationSkipSpaces::StartEnd,
             text_shadow: Arc::new([]),
             ruby_position: RubyPosition::Over,
             ruby_align: RubyAlign::SpaceAround,
@@ -437,6 +439,9 @@ impl TextStyle for OwnedTextStyle {
     }
     fn text_underline_position(&self) -> TextUnderlinePosition {
         self.text_underline_position
+    }
+    fn text_decoration_skip_spaces(&self) -> TextDecorationSkipSpaces {
+        self.text_decoration_skip_spaces
     }
     fn text_shadow(&self) -> impl Iterator<Item = TextShadow> + Clone {
         self.text_shadow.iter().copied()
