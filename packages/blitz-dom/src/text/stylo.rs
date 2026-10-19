@@ -47,7 +47,7 @@ use style::values::computed::{
     TextSecurity as StyloTextSecurity, TextTransform as StyloTextTransform,
     WordBreak as StyloWordBreak,
 };
-use style::values::generics::box_::{BaselineShiftKeyword, GenericBaselineShift};
+use style::values::generics::box_::{GenericVerticalAlign, VerticalAlignKeyword};
 use style::values::generics::font::GenericFontSizeAdjust;
 use style::values::generics::length::{GenericLengthOrNumber, GenericMargin};
 use style::values::generics::text::{
@@ -57,9 +57,8 @@ use style::values::specified::OutlineStyle as StyloOutlineStyle;
 use style::values::specified::TextAlignKeyword;
 use style::values::specified::border::BorderStyle as StyloBorderStyle;
 use style::values::specified::box_::{
-    AlignmentBaseline as StyloAlignmentBaseline, DisplayInside as StyloDisplayInside,
-    DisplayOutside as StyloDisplayOutside, DominantBaseline as StyloDominantBaseline,
-    Overflow as StyloOverflow,
+    DisplayInside as StyloDisplayInside, DisplayOutside as StyloDisplayOutside,
+    DominantBaseline as StyloDominantBaseline, Overflow as StyloOverflow,
 };
 use style::values::specified::font::VariantAlternates;
 use style::values::specified::text::{
@@ -1170,31 +1169,20 @@ impl<P: Deref<Target = ComputedValues> + Clone + Send + Sync> TextStyle for Styl
     }
 
     #[inline]
-    fn alignment_baseline(&self) -> text::AlignmentBaseline {
-        match self.0.get_box().slow_clone_alignment_baseline() {
-            StyloAlignmentBaseline::Baseline => text::AlignmentBaseline::Baseline,
-            StyloAlignmentBaseline::TextBottom => text::AlignmentBaseline::TextBottom,
-            StyloAlignmentBaseline::Middle => text::AlignmentBaseline::Middle,
-            StyloAlignmentBaseline::TextTop => text::AlignmentBaseline::TextTop,
-        }
-    }
-
-    #[inline]
-    fn baseline_shift(&self) -> text::BaselineShift {
-        match self.0.get_box().slow_clone_baseline_shift() {
-            GenericBaselineShift::Keyword(BaselineShiftKeyword::Sub) => text::BaselineShift::Sub,
-            GenericBaselineShift::Keyword(BaselineShiftKeyword::Super) => {
-                text::BaselineShift::Super
-            }
-            GenericBaselineShift::Keyword(BaselineShiftKeyword::Top) => text::BaselineShift::Top,
-            GenericBaselineShift::Keyword(BaselineShiftKeyword::Bottom) => {
-                text::BaselineShift::Bottom
-            }
-            GenericBaselineShift::Keyword(BaselineShiftKeyword::Center) => {
-                text::BaselineShift::Center
-            }
-            GenericBaselineShift::Length(length) => {
-                text::BaselineShift::Length(length_percentage(&length))
+    fn vertical_align(&self) -> text::VerticalAlign {
+        match self.0.get_box().slow_clone__servo_vertical_align() {
+            GenericVerticalAlign::Keyword(keyword) => match keyword {
+                VerticalAlignKeyword::Baseline => text::VerticalAlign::Baseline,
+                VerticalAlignKeyword::Sub => text::VerticalAlign::Sub,
+                VerticalAlignKeyword::Super => text::VerticalAlign::Super,
+                VerticalAlignKeyword::Top => text::VerticalAlign::Top,
+                VerticalAlignKeyword::TextTop => text::VerticalAlign::TextTop,
+                VerticalAlignKeyword::Middle => text::VerticalAlign::Middle,
+                VerticalAlignKeyword::Bottom => text::VerticalAlign::Bottom,
+                VerticalAlignKeyword::TextBottom => text::VerticalAlign::TextBottom,
+            },
+            GenericVerticalAlign::Length(length) => {
+                text::VerticalAlign::Length(length_percentage(&length))
             }
         }
     }
@@ -1490,8 +1478,7 @@ mod tests {
         assert_eq!(style.display(), owned.display());
         assert_eq!(style.float(), owned.float());
         assert_eq!(style.position(), owned.position());
-        assert_eq!(style.baseline_shift(), owned.baseline_shift());
-        assert_eq!(style.alignment_baseline(), owned.alignment_baseline());
+        assert_eq!(style.vertical_align(), owned.vertical_align());
         assert_eq!(style.padding(), owned.padding());
         assert_eq!(style.border_widths(), owned.border_widths());
         assert_eq!(style.border_styles(), owned.border_styles());
