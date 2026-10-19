@@ -6,6 +6,7 @@
 //! winkin takes each atomic inline's size as it is pushed, and the host only knows it once it has
 //! measured the box.
 
+mod calc;
 mod editor;
 mod fonts;
 mod paint;
@@ -122,6 +123,8 @@ pub struct TextLayout<S> {
     /// The content, and its lines once they are broken. Its allocations are
     /// reused by the next build.
     layout: Layout,
+    /// The `calc()` values the content's styles hold as handles, kept until it is built again.
+    calcs: calc::CalcValues,
     /// Whether the layout holds content built for the node as it is now.
     built: bool,
     /// The style the content was last built in, which its alignment and the block's other text
@@ -153,6 +156,7 @@ impl<S> Default for TextLayout<S> {
     fn default() -> Self {
         Self {
             layout: Layout::default(),
+            calcs: calc::CalcValues::default(),
             built: false,
             built_style: None,
             laid: false,
@@ -389,6 +393,8 @@ pub(crate) fn build<S: TextStyle, C: InlineSource<S>>(
     text.styles.first_letter = None;
     text.styles.marker = None;
     text.styles.marks.clear();
+    // The handles the old content holds are read no more: the build replaces them all.
+    text.calcs.clear();
 
     let block = source.block(root);
     text.built_style = block.as_ref().map(|block| block.style.clone());
@@ -418,7 +424,8 @@ pub(crate) fn build<S: TextStyle, C: InlineSource<S>>(
     let language = language.and_then(parse_language);
     let feature_values = source.font_feature_values();
     let root_lists = style::FontLists::of(&root_computed, &feature_values);
-    let mut root_style = style::computed_style(&root_lists, &root_computed, scale, language);
+    let calcs = &text.calcs;
+    let mut root_style = style::computed_style(&root_lists, &root_computed, calcs, scale, language);
     // An anonymous block's lines are the element's around it, whose
     // `unicode-bidi` applies to them: an override, or `plaintext`.
     if anonymous {
@@ -429,9 +436,9 @@ pub(crate) fn build<S: TextStyle, C: InlineSource<S>>(
         .as_ref()
         .map(|computed| style::FontLists::of(computed, &feature_values));
     let first_line_style = match (&first_line_computed, &first_line_lists) {
-        (Some(computed), Some(lists)) => {
-            Some(style::computed_style(lists, computed, scale, language))
-        }
+        (Some(computed), Some(lists)) => Some(style::computed_style(
+            lists, computed, calcs, scale, language,
+        )),
         _ => None,
     };
     if let Some(computed) = &first_line_computed {
@@ -443,6 +450,7 @@ pub(crate) fn build<S: TextStyle, C: InlineSource<S>>(
         first_line_style.as_ref(),
         &root_computed,
         &container,
+        calcs,
         scale,
     );
     // The root element's lines run in the body's direction, which CSS
@@ -458,12 +466,13 @@ pub(crate) fn build<S: TextStyle, C: InlineSource<S>>(
     // `text-indent` indents the element's first formatted line, which an
     // anonymous block after another box of the element's does not hold.
     if anonymous && !block.text_indent.hanging && follows_box {
-        block.text_indent.amount = winkin::style::LengthPercentage::default();
+        block.text_indent.amount = winkin::style::LengthPercentageOrCalc::ZERO;
     }
     text.writing_mode = block.writing_mode;
 
     let TextLayout {
         layout,
+        calcs,
         styles,
         boxes,
         basis,
@@ -477,6 +486,7 @@ pub(crate) fn build<S: TextStyle, C: InlineSource<S>>(
         builder: layout.builder(cx, key, &block, options),
         root: root.0,
         boxes: boxes.as_slice(),
+        calcs,
         styles,
         first_letter_open: true,
         feature_values: &feature_values,
@@ -517,7 +527,11 @@ fn emphasis_mark<S: TextStyle>(
 ) -> Option<Layout> {
     let string = style::emphasis_mark_string(computed)?;
     let lists = style::FontLists::of(computed, feature_values);
-    let own = unboxed(style::computed_style(&lists, computed, scale, language));
+    // An unboxed style keeps no `calc()` handle.
+    let calcs = calc::CalcValues::default();
+    let own = unboxed(style::computed_style(
+        &lists, computed, &calcs, scale, language,
+    ));
     let mark = ComputedStyle {
         font: winkin::style::FontGroup {
             size: (own.font.size / 2.0).round(),
@@ -581,6 +595,8 @@ struct WinkinBuilder<'a, 'b, 'c, S, V> {
     /// The key of the block the content is for.
     root: u64,
     boxes: &'a [BuiltBox],
+    /// Where the styles keep the `calc()` values winkin resolves later.
+    calcs: &'b calc::CalcValues,
     styles: &'b mut PaintStyles<S>,
     /// Whether the block's `::first-letter` may still be found in the text pushed next.
     first_letter_open: bool,
@@ -626,7 +642,7 @@ impl<S: TextStyle, V: FontFeatureValues> WinkinBuilder<'_, '_, '_, S, V> {
         computed: &'s S,
         language: Option<Language>,
     ) -> ComputedStyle<'s> {
-        let own = style::computed_style(lists, computed, self.scale, language);
+        let own = style::computed_style(lists, computed, self.calcs, self.scale, language);
         ComputedStyle {
             edges: EdgesGroup {
                 border: EdgesGroup::INITIAL.border,
@@ -670,6 +686,7 @@ impl<S: TextStyle, V: FontFeatureValues> InlineBuilder<S> for WinkinBuilder<'_, 
                 let bullet = unboxed(style::computed_style(
                     &lists,
                     &root_computed,
+                    self.calcs,
                     self.scale,
                     language,
                 ));
@@ -709,13 +726,13 @@ impl<S: TextStyle, V: FontFeatureValues> InlineBuilder<S> for WinkinBuilder<'_, 
         }
         {
             let lists = style::FontLists::of(&computed, self.feature_values);
-            let own = style::computed_style(&lists, &computed, self.scale, language);
+            let own = style::computed_style(&lists, &computed, self.calcs, self.scale, language);
             let first_line_lists =
                 first_line.map(|computed| style::FontLists::of(computed, self.feature_values));
             let first_line_style = match (first_line, &first_line_lists) {
-                (Some(computed), Some(lists)) => {
-                    Some(style::computed_style(lists, computed, self.scale, language))
-                }
+                (Some(computed), Some(lists)) => Some(style::computed_style(
+                    lists, computed, self.calcs, self.scale, language,
+                )),
                 _ => None,
             };
             let key = NodeKey(key.0);
@@ -754,13 +771,13 @@ impl<S: TextStyle, V: FontFeatureValues> InlineBuilder<S> for WinkinBuilder<'_, 
         {
             let lists = style::FontLists::of(&computed, self.feature_values);
             let own = unboxed(style::computed_style(
-                &lists, &computed, self.scale, language,
+                &lists, &computed, self.calcs, self.scale, language,
             ));
             let first_line_lists =
                 first_line.map(|computed| style::FontLists::of(computed, self.feature_values));
             let first_line_style = match (first_line, &first_line_lists) {
                 (Some(computed), Some(lists)) => Some(unboxed(style::computed_style(
-                    lists, computed, self.scale, language,
+                    lists, computed, self.calcs, self.scale, language,
                 ))),
                 _ => None,
             };
@@ -816,13 +833,13 @@ impl<S: TextStyle, V: FontFeatureValues> InlineBuilder<S> for WinkinBuilder<'_, 
         let language = parent.language;
         {
             let lists = style::FontLists::of(style, self.feature_values);
-            let letter = style::computed_style(&lists, style, self.scale, language);
+            let letter = style::computed_style(&lists, style, self.calcs, self.scale, language);
             let first_line_lists =
                 first_line.map(|computed| style::FontLists::of(computed, self.feature_values));
             let first_line_style = match (first_line, &first_line_lists) {
-                (Some(computed), Some(lists)) => {
-                    Some(style::computed_style(lists, computed, self.scale, language))
-                }
+                (Some(computed), Some(lists)) => Some(style::computed_style(
+                    lists, computed, self.calcs, self.scale, language,
+                )),
                 _ => None,
             };
             self.builder.set_first_letter(
@@ -1377,6 +1394,7 @@ impl<S: TextStyle> InlineLayout<S> for TextLayout<S> {
                         let mut own =
                             Context::with_shared_fonts(collection.clone(), shared.clone());
                         own.set_config(config);
+                        own.set_calc_resolver(Some(Box::new(calc::HostCalc)));
                         std::cell::RefCell::new((generation, own))
                     })
                     .borrow_mut();
@@ -1775,7 +1793,8 @@ pub(crate) fn build_plain_text<S: TextStyle>(
     width: Option<f32>,
 ) -> bool {
     let lists = style::FontLists::of(computed, &());
-    let own = style::computed_style(&lists, computed, scale, None);
+    text.calcs.clear();
+    let own = style::computed_style(&lists, computed, &text.calcs, scale, None);
     let own = ComputedStyle {
         text: winkin::style::TextGroup {
             white_space_collapse: match own.text.white_space_collapse {
@@ -1794,7 +1813,7 @@ pub(crate) fn build_plain_text<S: TextStyle>(
     };
     let masked = own.text.security != winkin::style::TextSecurity::None;
     let mapped = masked || own.text.transform != winkin::style::TextGroup::INITIAL.transform;
-    let block = style::block_style(&own, None, computed, computed, scale);
+    let block = style::block_style(&own, None, computed, computed, &text.calcs, scale);
     let key = NodeKey(node);
     text.built = false;
     text.laid = false;
@@ -1883,7 +1902,13 @@ impl<S: TextStyle> MarkerEngine<S> for TextLayout<S> {
         if bullet {
             lists = lists.with_families_first(&BULLET_FAMILIES);
         }
-        let own = unboxed(style::computed_style(&lists, computed, scale, None));
+        let own = unboxed(style::computed_style(
+            &lists,
+            computed,
+            &text.calcs,
+            scale,
+            None,
+        ));
         let block = ComputedBlockStyle {
             writing_mode: WritingMode::HorizontalTb,
             ..ComputedBlockStyle::new(&own)

@@ -113,7 +113,11 @@ impl DocumentText for TextContext {
         let document = LayerBuilder::new(Role::Document);
         let collection = base.clone().with_layer(document.snapshot());
         Self {
-            cx: Context::with_shared_fonts(collection.clone(), given.shared.clone()),
+            cx: {
+                let mut cx = Context::with_shared_fonts(collection.clone(), given.shared.clone());
+                cx.set_calc_resolver(Some(Box::new(crate::calc::HostCalc)));
+                cx
+            },
             generation: 0,
             #[cfg(feature = "parallel")]
             threads: thread_local::ThreadLocal::new(),

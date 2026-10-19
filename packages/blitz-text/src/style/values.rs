@@ -4,25 +4,30 @@
 //! Lengths are in CSS pixels. A percentage is kept as a fraction of whatever it is resolved
 //! against, which only layout knows.
 
+use core::fmt;
+use std::sync::Arc;
+
 /// A color, in sRGB with alpha.
 pub type Color = color::AlphaColor<color::Srgb>;
 
 /// A computed `<length-percentage>`: a length in CSS pixels, a fraction of a basis, or a `calc()`
 /// of both.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum LengthPercentage {
     /// A length, in CSS pixels.
     Length(f32),
     /// A percentage, as a fraction: `0.5` is `50%`.
     Percentage(f32),
-    /// A `calc()` mixing a length and a percentage, as the length it is against a basis of zero
-    /// and the fraction it grows by with the basis.
+    /// A `calc()` mixing a length and a percentage linearly, as the length it is against a basis
+    /// of zero and the fraction it grows by with the basis.
     Calc {
         /// The length at a basis of zero, in CSS pixels.
         px: f32,
         /// How much the value grows a CSS pixel of basis.
         fraction: f32,
     },
+    /// A `calc()` that is not linear in its basis, such as `max(20px, 10%)`.
+    Nonlinear(Calc),
 }
 
 impl Default for LengthPercentage {
@@ -34,44 +39,78 @@ impl Default for LengthPercentage {
 impl LengthPercentage {
     /// Returns the value against `basis` CSS pixels.
     #[inline]
-    pub fn resolve(self, basis: f32) -> f32 {
+    pub fn resolve(&self, basis: f32) -> f32 {
         match self {
-            Self::Length(px) => px,
+            Self::Length(px) => *px,
             Self::Percentage(fraction) => {
                 let value = basis * fraction;
                 if value.is_nan() { 0.0 } else { value }
             }
             Self::Calc { px, fraction } => px + basis * fraction,
+            Self::Nonlinear(calc) => calc.resolve(basis),
         }
     }
 
-    /// Returns the length part, in CSS pixels.
+    /// Returns the length part, in CSS pixels: the value against a basis of zero.
     #[inline]
-    pub fn px(self) -> f32 {
+    pub fn px(&self) -> f32 {
         match self {
-            Self::Length(px) | Self::Calc { px, .. } => px,
+            Self::Length(px) | Self::Calc { px, .. } => *px,
             Self::Percentage(_) => 0.0,
+            Self::Nonlinear(calc) => calc.resolve(0.0),
         }
     }
 
-    /// Returns the percentage part, as a fraction.
+    /// Returns the percentage part, as a fraction, or zero for a nonlinear `calc()`.
     #[inline]
-    pub fn fraction(self) -> f32 {
+    pub fn fraction(&self) -> f32 {
         match self {
-            Self::Length(_) => 0.0,
-            Self::Percentage(fraction) | Self::Calc { fraction, .. } => fraction,
+            Self::Length(_) | Self::Nonlinear(_) => 0.0,
+            Self::Percentage(fraction) | Self::Calc { fraction, .. } => *fraction,
         }
     }
 
-    /// Returns whether the value has a percentage part.
+    /// Returns whether the value depends on its basis.
     #[inline]
-    pub fn has_percentage(self) -> bool {
+    pub fn has_percentage(&self) -> bool {
         !matches!(self, Self::Length(_))
     }
 }
 
+/// A `calc()` that is not linear in its basis, as the function that resolves it.
+///
+/// Two values are equal only when they share one function: a host that answers with a new one
+/// each time reads as a change.
+#[derive(Clone)]
+pub struct Calc(Arc<dyn Fn(f32) -> f32 + Send + Sync>);
+
+impl Calc {
+    /// Returns the `calc()` that `resolve` resolves, from a basis in CSS pixels to CSS pixels.
+    pub fn new(resolve: impl Fn(f32) -> f32 + Send + Sync + 'static) -> Self {
+        Self(Arc::new(resolve))
+    }
+
+    /// Returns the value against `basis` CSS pixels.
+    #[inline]
+    pub fn resolve(&self, basis: f32) -> f32 {
+        (self.0)(basis)
+    }
+}
+
+impl PartialEq for Calc {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for Calc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Calc(..)")
+    }
+}
+
 /// A computed `<length-percentage> | auto`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum LengthPercentageOrAuto {
     /// `auto`.
     #[default]
@@ -93,13 +132,13 @@ pub struct Sides<T> {
     pub left: T,
 }
 
-impl<T: Copy> Sides<T> {
+impl<T: Clone> Sides<T> {
     /// Returns the same value on every side.
-    pub const fn all(value: T) -> Self {
+    pub fn all(value: T) -> Self {
         Self {
-            top: value,
-            right: value,
-            bottom: value,
+            top: value.clone(),
+            right: value.clone(),
+            bottom: value.clone(),
             left: value,
         }
     }
@@ -119,7 +158,7 @@ pub struct Corners<T> {
 }
 
 /// A computed `border-*-radius`: the horizontal and vertical radius.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CornerRadius {
     /// The horizontal radius, whose percentages are of the box's width.
     pub width: LengthPercentage,
@@ -391,7 +430,7 @@ pub enum TextAlignLast {
 }
 
 /// A computed `text-indent`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TextIndent {
     /// The indent, whose percentages are of the containing block's inline size.
     pub length: LengthPercentage,
@@ -774,7 +813,7 @@ pub enum TextDecorationStyle {
 }
 
 /// A computed `text-decoration-thickness`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum TextDecorationThickness {
     #[default]
     Auto,
@@ -784,7 +823,7 @@ pub enum TextDecorationThickness {
 }
 
 /// A computed `text-decoration-inset`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum TextDecorationInset {
     #[default]
     Auto,
@@ -959,7 +998,7 @@ pub enum Position {
 }
 
 /// A computed `vertical-align`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum VerticalAlign {
     #[default]
     Baseline,

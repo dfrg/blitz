@@ -360,7 +360,7 @@ impl TextStyle for OwnedTextStyle {
         self.text_align_last
     }
     fn text_indent(&self) -> TextIndent {
-        self.text_indent
+        self.text_indent.clone()
     }
     fn text_justify(&self) -> TextJustify {
         self.text_justify
@@ -396,10 +396,10 @@ impl TextStyle for OwnedTextStyle {
         self.tab_size
     }
     fn letter_spacing(&self) -> LengthPercentage {
-        self.letter_spacing
+        self.letter_spacing.clone()
     }
     fn word_spacing(&self) -> LengthPercentage {
-        self.word_spacing
+        self.word_spacing.clone()
     }
     fn text_autospace(&self) -> TextAutospace {
         self.text_autospace
@@ -433,7 +433,7 @@ impl TextStyle for OwnedTextStyle {
         self.text_fit
     }
     fn text_underline_offset(&self) -> Option<LengthPercentage> {
-        self.text_underline_offset
+        self.text_underline_offset.clone()
     }
     fn text_underline_position(&self) -> TextUnderlinePosition {
         self.text_underline_position
@@ -478,10 +478,10 @@ impl TextStyle for OwnedTextStyle {
         self.text_decoration_color
     }
     fn text_decoration_thickness(&self) -> TextDecorationThickness {
-        self.text_decoration_thickness
+        self.text_decoration_thickness.clone()
     }
     fn text_decoration_inset(&self) -> TextDecorationInset {
-        self.text_decoration_inset
+        self.text_decoration_inset.clone()
     }
     fn text_overflow(&self) -> TextOverflow {
         self.text_overflow
@@ -514,16 +514,16 @@ impl TextStyle for OwnedTextStyle {
         self.position
     }
     fn vertical_align(&self) -> VerticalAlign {
-        self.vertical_align
+        self.vertical_align.clone()
     }
     fn overflow_x(&self) -> Overflow {
         self.overflow_x
     }
     fn margin(&self) -> Sides<LengthPercentageOrAuto> {
-        self.margin
+        self.margin.clone()
     }
     fn padding(&self) -> Sides<LengthPercentage> {
-        self.padding
+        self.padding.clone()
     }
     fn border_widths(&self) -> Sides<f32> {
         self.border_widths
@@ -535,7 +535,7 @@ impl TextStyle for OwnedTextStyle {
         self.border_colors
     }
     fn border_radii(&self) -> Corners<CornerRadius> {
-        self.border_radii
+        self.border_radii.clone()
     }
     fn box_decoration_break(&self) -> BoxDecorationBreak {
         self.box_decoration_break

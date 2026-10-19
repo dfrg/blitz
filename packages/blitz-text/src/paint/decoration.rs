@@ -220,7 +220,7 @@ pub fn flush_line_decorations(
         // inline-start and end edges. Percentages are of the line's length, the box's advance on
         // this line; `auto` is no inset.
         let (inset_start, inset_end) = match deco.inset {
-            TextDecorationInset::Length { start, end } => {
+            TextDecorationInset::Length { ref start, ref end } => {
                 // The extent is in device pixels, and percentages resolve in CSS pixels.
                 let line_length = (width / scale) as f32;
                 (

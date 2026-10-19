@@ -29,6 +29,7 @@ use style::computed_values::white_space_collapse::T as StyloWhiteSpaceCollapse;
 use style::logical_geometry::WritingMode as StyloWritingMode;
 use style::properties::ComputedValues;
 use style::servo_arc::Arc as ServoArc;
+use style::values::computed::ToComputedValue;
 use style::values::computed::font::{
     FontFamily as StyloFontFamily, FontStyle as StyloFontStyle,
     FontSynthesis as StyloFontSynthesis, FontVariantEastAsian, FontVariantLigatures,
@@ -48,11 +49,13 @@ use style::values::computed::{
     WordBreak as StyloWordBreak,
 };
 use style::values::generics::box_::{GenericVerticalAlign, VerticalAlignKeyword};
+use style::values::generics::calc::GenericCalcNode;
 use style::values::generics::font::GenericFontSizeAdjust;
 use style::values::generics::length::{GenericLengthOrNumber, GenericMargin};
 use style::values::generics::text::{
     GenericInitialLetterSink, GenericTextDecorationInset, GenericTextDecorationLength,
 };
+use style::values::specified::LengthPercentage as SpecifiedLengthPercentage;
 use style::values::specified::OutlineStyle as StyloOutlineStyle;
 use style::values::specified::TextAlignKeyword;
 use style::values::specified::border::BorderStyle as StyloBorderStyle;
@@ -60,6 +63,7 @@ use style::values::specified::box_::{
     DisplayInside as StyloDisplayInside, DisplayOutside as StyloDisplayOutside,
     DominantBaseline as StyloDominantBaseline, Overflow as StyloOverflow,
 };
+use style::values::specified::calc::Leaf as CalcLeaf;
 use style::values::specified::font::VariantAlternates;
 use style::values::specified::text::{
     HyphenateCharacter, RubyPosition as StyloRubyPosition, TextAutospace as StyloTextAutospace,
@@ -70,6 +74,7 @@ use style::values::specified::text::{
     TextEmphasisShapeKeyword, TextJustify as StyloTextJustify,
     TextOverflowSide as StyloTextOverflowSide, TextUnderlinePosition as StyloTextUnderlinePosition,
 };
+use style_traits::values::specified::AllowedNumericType;
 
 use crate::util::ToColorColor as _;
 
@@ -159,14 +164,17 @@ pub(crate) fn font_style(style: StyloFontStyle) -> text::FontStyle {
     }
 }
 
-/// A `<length-percentage>`. A `calc()` is split into its length and its fraction by resolving it
-/// against two bases: the value is linear in its basis.
+/// A `<length-percentage>`.
+///
+/// A `calc()` linear in its basis is split into its length and its fraction by resolving it
+/// against two bases. Any other, such as `max(20px, 10%)`, is kept whole as a function of the
+/// basis, which resolves it as Stylo does.
 #[inline]
 fn length_percentage(value: &StyloLengthPercentage) -> text::LengthPercentage {
     match value.unpack() {
         Unpacked::Length(length) => text::LengthPercentage::Length(length.px()),
         Unpacked::Percentage(percentage) => text::LengthPercentage::Percentage(percentage.0),
-        Unpacked::Calc(_) => {
+        Unpacked::Calc(_) if is_linear(value) => {
             let at_zero = value.resolve(Length::new(0.0)).px();
             let at_hundred = value.resolve(Length::new(100.0)).px();
             text::LengthPercentage::Calc {
@@ -174,7 +182,75 @@ fn length_percentage(value: &StyloLengthPercentage) -> text::LengthPercentage {
                 fraction: (at_hundred - at_zero) / 100.0,
             }
         }
+        Unpacked::Calc(_) => {
+            let value = value.clone();
+            text::LengthPercentage::Nonlinear(text::Calc::new(move |basis| {
+                value.resolve(Length::new(basis)).px()
+            }))
+        }
     }
+}
+
+/// A `<length-percentage>` whose percentages are of the font size, `font_size` CSS pixels.
+///
+/// A `calc()` that is not linear in the font size is resolved against it here, since the font
+/// size is known.
+#[inline]
+fn of_font_size(value: &StyloLengthPercentage, font_size: f32) -> text::LengthPercentage {
+    match length_percentage(value) {
+        text::LengthPercentage::Nonlinear(calc) => {
+            text::LengthPercentage::Length(calc.resolve(font_size))
+        }
+        linear => linear,
+    }
+}
+
+/// Returns whether `value` is linear in its basis: a length, a percentage, or a `calc()` that
+/// only adds, negates and scales them by constants.
+///
+/// A `calc()` its property clamps, such as padding's at zero, is not: the clamp bends it, so
+/// splitting it by two bases would carry the clamp at one of them to every basis.
+fn is_linear(value: &StyloLengthPercentage) -> bool {
+    if !matches!(value.unpack(), Unpacked::Calc(_)) {
+        return true;
+    }
+    match SpecifiedLengthPercentage::from_computed_value(value) {
+        SpecifiedLengthPercentage::Calc(calc) => {
+            calc.0.clamping_mode == AllowedNumericType::All && node_is_linear(&calc.0.node)
+        }
+        _ => true,
+    }
+}
+
+type CalcNode = GenericCalcNode<CalcLeaf>;
+
+/// Returns whether `node` is linear in the basis.
+fn node_is_linear(node: &CalcNode) -> bool {
+    if is_constant(node) {
+        return true;
+    }
+    match node {
+        CalcNode::Leaf(_) => true,
+        CalcNode::Negate(child) => node_is_linear(child),
+        CalcNode::Sum(children) => children.iter().all(node_is_linear),
+        CalcNode::Product(factors) => {
+            let mut varying = factors.iter().filter(|factor| !is_constant(factor));
+            varying.next().is_some_and(node_is_linear) && varying.next().is_none()
+        }
+        _ => false,
+    }
+}
+
+/// Returns whether `node` holds no percentage, so it is the same at every basis.
+fn is_constant(node: &CalcNode) -> bool {
+    let mut percentage = false;
+    let mut node = node.clone();
+    node.visit_depth_first(|node| {
+        if let CalcNode::Leaf(CalcLeaf::Percentage(_)) = node {
+            percentage = true;
+        }
+    });
+    !percentage
 }
 
 #[inline]
@@ -682,12 +758,15 @@ impl<P: Deref<Target = ComputedValues> + Clone + Send + Sync> TextStyle for Styl
 
     #[inline]
     fn letter_spacing(&self) -> text::LengthPercentage {
-        length_percentage(&self.0.get_inherited_text().letter_spacing.0)
+        of_font_size(
+            &self.0.get_inherited_text().letter_spacing.0,
+            self.font_size(),
+        )
     }
 
     #[inline]
     fn word_spacing(&self) -> text::LengthPercentage {
-        length_percentage(&self.0.get_inherited_text().word_spacing)
+        of_font_size(&self.0.get_inherited_text().word_spacing, self.font_size())
     }
 
     #[inline]
@@ -813,7 +892,7 @@ impl<P: Deref<Target = ComputedValues> + Clone + Send + Sync> TextStyle for Styl
             .text_underline_offset
             .non_auto()
             .as_ref()
-            .map(length_percentage)
+            .map(|offset| of_font_size(offset, self.font_size()))
     }
 
     #[inline]
@@ -1510,5 +1589,78 @@ mod tests {
             is_initial: false,
         };
         assert!(!is_initial_family(&named));
+    }
+}
+
+#[cfg(test)]
+mod calc_tests {
+    use blitz_text::style as text;
+    use style::typed_om::NumericBaseType;
+    use style::values::computed::calc::CalcPercentageLeaf;
+    use style::values::computed::length_percentage::{CalcNode, ComputedLeaf};
+    use style::values::computed::{Length, LengthPercentage};
+    use style::values::generics::Optional;
+    use style::values::generics::calc::MinMaxOp;
+    use style_traits::values::specified::AllowedNumericType;
+
+    use super::{is_linear, length_percentage, of_font_size};
+
+    fn px(px: f32) -> CalcNode {
+        CalcNode::Leaf(ComputedLeaf::Length(Length::new(px)))
+    }
+
+    fn percent(fraction: f32) -> CalcNode {
+        CalcNode::Leaf(ComputedLeaf::Percentage(CalcPercentageLeaf::new(
+            fraction,
+            Optional::Some(NumericBaseType::Length),
+        )))
+    }
+
+    fn calc(node: CalcNode, clamping: AllowedNumericType) -> LengthPercentage {
+        LengthPercentage::new_calc(node, clamping)
+    }
+
+    fn max() -> LengthPercentage {
+        calc(
+            CalcNode::MinMax(vec![px(20.0), percent(0.1)].into(), MinMaxOp::Max),
+            AllowedNumericType::All,
+        )
+    }
+
+    /// Sums, negations and constant multiples of lengths and percentages are linear in the
+    /// basis; `max()`, `abs()` and a sum its property clamps at zero are not.
+    #[test]
+    fn only_sums_and_scaled_percentages_are_linear() {
+        let all = AllowedNumericType::All;
+        let sum = CalcNode::Sum(vec![px(10.0), CalcNode::Negate(Box::new(percent(0.5)))].into());
+        assert!(is_linear(&calc(sum.clone(), all)));
+        let scaled = CalcNode::Sum(
+            vec![
+                px(1.0),
+                CalcNode::Product(
+                    vec![percent(0.5), CalcNode::Leaf(ComputedLeaf::Number(2.0))].into(),
+                ),
+            ]
+            .into(),
+        );
+        assert!(is_linear(&calc(scaled, all)));
+        assert!(!is_linear(&max()));
+        let abs = CalcNode::Abs(Box::new(sum.clone()));
+        assert!(!is_linear(&calc(abs, all)));
+        assert!(!is_linear(&calc(sum, AllowedNumericType::NonNegative)));
+    }
+
+    /// A nonlinear `calc()` stays a function of its basis, `max(20px, 10%)` resolving to 20 at
+    /// 100 and 40 at 400; against the font size it is resolved at once.
+    #[test]
+    fn a_nonlinear_calc_resolves_against_each_basis() {
+        let value = length_percentage(&max());
+        assert!(matches!(value, text::LengthPercentage::Nonlinear(_)));
+        assert_eq!(value.resolve(100.0), 20.0);
+        assert_eq!(value.resolve(400.0), 40.0);
+        assert_eq!(
+            of_font_size(&max(), 300.0),
+            text::LengthPercentage::Length(30.0)
+        );
     }
 }
