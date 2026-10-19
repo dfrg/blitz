@@ -17,15 +17,17 @@ use winkin::style::{
     FontFeature, FontGroup, FontKerning, FontLanguageOverride, FontOpticalSizing, FontSizeAdjust,
     FontSynthesis, FontVariantCaps, FontVariantEmoji, FontVariantPosition, FontVariants,
     FontVariation, HangEnd, HangingPunctuation, Hyphens, InitialLetter, InitialLetterAlign,
-    Language, LengthPercentage, LineBreak, LineClamp, LineGroup, LineHeight, OrientationGroup,
-    OverflowWrap, RubyAlign, RubyGroup, RubyOverhang, RubyPosition, Sides, TabSize, Tag, TextAlign,
-    TextAlignLast, TextAutospace, TextBoxEdge, TextBoxTrim, TextCase, TextCombineUpright,
-    TextEdgeOver, TextEdgeUnder, TextEmphasis, TextGroup, TextIndent, TextJustify, TextOrientation,
-    TextOverflow, TextSpacingTrim, TextTransform, TextWrapMode, TextWrapStyle, UnicodeBidi,
-    VerticalAlign, WhiteSpaceCollapse, WordBreak, WritingMode,
+    Language, LengthPercentage, LengthPercentageOrCalc, LineBreak, LineClamp, LineGroup,
+    LineHeight, OrientationGroup, OverflowWrap, RubyAlign, RubyGroup, RubyOverhang, RubyPosition,
+    Sides, TabSize, Tag, TextAlign, TextAlignLast, TextAutospace, TextBoxEdge, TextBoxTrim,
+    TextCase, TextCombineUpright, TextEdgeOver, TextEdgeUnder, TextEmphasis, TextGroup, TextIndent,
+    TextJustify, TextOrientation, TextOverflow, TextSpacingTrim, TextTransform, TextWrapMode,
+    TextWrapStyle, UnicodeBidi, VerticalAlign, WhiteSpaceCollapse, WordBreak, WritingMode,
 };
 use winkin::style::{TextDecorationSkipSpaces, TextFit, TextFitKind, TextFitTarget};
 use winkin::{ComputedBlockStyle, ComputedStyle};
+
+use crate::calc::{self, CalcValues};
 
 /// Adds the features `style`'s `font-variant-alternates` resolves to through the document's
 /// `@font-feature-values` rules, `values`.
@@ -165,34 +167,30 @@ pub(crate) fn family_name(family: FontFamilyName<'_>) -> FontFamilyName<'_> {
     family
 }
 
-/// A length-percentage as a length in device pixels and a fraction of whatever layout resolves
-/// it against.
+/// A `letter-spacing` or `word-spacing` as a length in device pixels and a fraction of the font
+/// size, `font_size` CSS pixels.
 ///
-/// `calc()` mixing the two is split by resolving it against two bases: the value is linear in
-/// its basis.
-fn length_percentage(value: css::LengthPercentage, scale: f32) -> LengthPercentage {
-    if let css::LengthPercentage::Calc { px, fraction } = value {
-        return LengthPercentage {
-            px: px * scale,
-            fraction,
-        };
-    }
-    let at_zero = value.resolve(0.0);
-    let at_hundred = value.resolve(100.0);
-    LengthPercentage {
-        px: at_zero * scale,
-        fraction: (at_hundred - at_zero) / 100.0,
+/// A nonlinear `calc()` is resolved against the font size here, since winkin takes spacing only
+/// as a length and a fraction.
+fn spacing(value: &css::LengthPercentage, font_size: f32, scale: f32) -> LengthPercentage {
+    match value {
+        css::LengthPercentage::Nonlinear(calc) => {
+            LengthPercentage::from_px(calc.resolve(font_size) * scale)
+        }
+        _ => calc::linear(value, scale),
     }
 }
 
 /// Converts an element's computed style, its lists borrowed from `lists`.
 ///
 /// Lengths are scaled by `scale` into device pixels. Percentages of the containing block stay
-/// percentages, which winkin resolves against the basis each measure gives it. `language` is the
-/// content language from the nearest `lang`.
+/// percentages, which winkin resolves against the basis each measure gives it; a margin's or
+/// padding's nonlinear `calc()` is kept in `calcs`. `language` is the content language from the
+/// nearest `lang`.
 pub(crate) fn computed_style<'a, S: TextStyle>(
     lists: &'a FontLists<'_>,
     style: &'a S,
+    calcs: &CalcValues,
     scale: f32,
     language: Option<Language>,
 ) -> ComputedStyle<'a> {
@@ -218,7 +216,7 @@ pub(crate) fn computed_style<'a, S: TextStyle>(
                 css::TextCombineUpright::Digits(count) => TextCombineUpright::Digits(count),
             },
         },
-        edges: edges_group(style, scale),
+        edges: edges_group(style, calcs, scale),
         ruby: RubyGroup {
             position: ruby_position(style),
             align: match style.ruby_align() {
@@ -509,9 +507,9 @@ fn text_group<S: TextStyle>(style: &S, scale: f32, language: Option<Language>) -
             css::TabSize::Length(length) => TabSize::Px(length * scale),
         },
         // A percentage is of the font size, which layout takes it of.
-        letter_spacing: length_percentage(style.letter_spacing(), scale),
+        letter_spacing: spacing(&style.letter_spacing(), style.font_size(), scale),
         // A percentage is of the font size, which layout takes it of.
-        word_spacing: length_percentage(style.word_spacing(), scale),
+        word_spacing: spacing(&style.word_spacing(), style.font_size(), scale),
         autospace: {
             let autospace = style.text_autospace();
             if autospace.intersects(css::TextAutospace::NORMAL | css::TextAutospace::AUTO) {
@@ -686,15 +684,16 @@ fn text_box_edge(edge: css::TextBoxEdge) -> TextBoxEdge {
 /// Margin, border and padding, and `box-decoration-break`.
 ///
 /// A border width is snapped as CSS snaps it, in device pixels: one under a pixel to a pixel,
-/// and any other down to a whole one.
-fn edges_group(style: &impl TextStyle, scale: f32) -> EdgesGroup {
+/// and any other down to a whole one. A nonlinear `calc()` is kept in `calcs`.
+fn edges_group(style: &impl TextStyle, calcs: &CalcValues, scale: f32) -> EdgesGroup {
     let margin = style.margin();
     let padding = style.padding();
     let widths = style.border_widths();
     let styles = style.border_styles();
-    let margin_side = |value: css::LengthPercentageOrAuto| match value {
-        css::LengthPercentageOrAuto::LengthPercentage(length) => length_percentage(length, scale),
-        css::LengthPercentageOrAuto::Auto => LengthPercentage::default(),
+    let length_percentage = |value: &css::LengthPercentage| calcs.length_percentage(value, scale);
+    let margin_side = |value: &css::LengthPercentageOrAuto| match value {
+        css::LengthPercentageOrAuto::LengthPercentage(length) => length_percentage(length),
+        css::LengthPercentageOrAuto::Auto => LengthPercentageOrCalc::ZERO,
     };
     let border_side = |width: f32, style: css::BorderStyle| {
         let width = width * scale;
@@ -706,10 +705,10 @@ fn edges_group(style: &impl TextStyle, scale: f32) -> EdgesGroup {
     };
     EdgesGroup {
         margin: Sides {
-            top: margin_side(margin.top),
-            right: margin_side(margin.right),
-            bottom: margin_side(margin.bottom),
-            left: margin_side(margin.left),
+            top: margin_side(&margin.top),
+            right: margin_side(&margin.right),
+            bottom: margin_side(&margin.bottom),
+            left: margin_side(&margin.left),
         },
         border: Sides {
             top: border_side(widths.top, styles.top),
@@ -718,10 +717,10 @@ fn edges_group(style: &impl TextStyle, scale: f32) -> EdgesGroup {
             left: border_side(widths.left, styles.left),
         },
         padding: Sides {
-            top: length_percentage(padding.top, scale),
-            right: length_percentage(padding.right, scale),
-            bottom: length_percentage(padding.bottom, scale),
-            left: length_percentage(padding.left, scale),
+            top: length_percentage(&padding.top),
+            right: length_percentage(&padding.right),
+            bottom: length_percentage(&padding.bottom),
+            left: length_percentage(&padding.left),
         },
         decoration_break: match style.box_decoration_break() {
             css::BoxDecorationBreak::Slice => BoxDecorationBreak::Slice,
@@ -791,12 +790,14 @@ pub(crate) fn text_align(style: &impl TextStyle) -> (TextAlign, TextAlignLast) {
 /// value per block container, read from `block`.
 ///
 /// `container` is the box whose overflow decides whether `text-overflow` applies, which is the
-/// block itself or, for an anonymous block, the box around it.
+/// block itself or, for an anonymous block, the box around it. A nonlinear `text-indent` is kept
+/// in `calcs`.
 pub(crate) fn block_style<'a>(
     style: &'a ComputedStyle<'a>,
     first_line: Option<&'a ComputedStyle<'a>>,
     block: &impl TextStyle,
     container: &impl TextStyle,
+    calcs: &CalcValues,
     scale: f32,
 ) -> ComputedBlockStyle<'a> {
     let (text_align, text_align_last) = text_align(block);
@@ -825,7 +826,7 @@ pub(crate) fn block_style<'a>(
         text_align,
         text_align_last,
         text_indent: TextIndent {
-            amount: length_percentage(indent.length, scale),
+            amount: calcs.length_percentage(&indent.length, scale),
             hanging: indent.hanging,
             each_line: indent.each_line,
         },
@@ -890,7 +891,7 @@ mod tests {
     use blitz_text::OwnedTextStyle;
     use blitz_text::style::{self as css, FontFamilyName};
 
-    use super::{FontLists, computed_style};
+    use super::{CalcValues, FontLists, computed_style};
 
     /// The initial `font-family` names no family, which winkin sets in the language's standard
     /// font; a family a style sheet names is kept.
@@ -899,7 +900,7 @@ mod tests {
         let initial = OwnedTextStyle::default();
         let lists = FontLists::of(&initial, &());
         assert!(
-            computed_style(&lists, &initial, 1.0, None)
+            computed_style(&lists, &initial, &CalcValues::default(), 1.0, None)
                 .font
                 .families
                 .is_empty()
@@ -907,7 +908,7 @@ mod tests {
         let named = OwnedTextStyle::with_families([FontFamilyName::named("Ahem")]);
         let lists = FontLists::of(&named, &());
         assert_eq!(
-            computed_style(&lists, &named, 1.0, None)
+            computed_style(&lists, &named, &CalcValues::default(), 1.0, None)
                 .font
                 .families
                 .len(),
@@ -924,9 +925,25 @@ mod tests {
             ..OwnedTextStyle::default()
         };
         let lists = FontLists::of(&style, &());
-        let computed = computed_style(&lists, &style, 2.0, None);
+        let computed = computed_style(&lists, &style, &CalcValues::default(), 2.0, None);
         assert_eq!(computed.text.letter_spacing.px, 4.0);
         assert_eq!(computed.text.word_spacing.fraction, 0.5);
         assert_eq!(computed.font.size, 32.0);
+    }
+
+    /// A nonlinear `letter-spacing` resolves against the font size as the style converts:
+    /// `max(1px, 10%)` of 16px is 1.6px, 3.2 device pixels at a scale of 2.
+    #[test]
+    fn a_nonlinear_spacing_resolves_at_the_font_size() {
+        let style = OwnedTextStyle {
+            letter_spacing: css::LengthPercentage::Nonlinear(css::Calc::new(|basis| {
+                f32::max(1.0, 0.1 * basis)
+            })),
+            ..OwnedTextStyle::default()
+        };
+        let lists = FontLists::of(&style, &());
+        let computed = computed_style(&lists, &style, &CalcValues::default(), 2.0, None);
+        assert_eq!(computed.text.letter_spacing.px, 3.2);
+        assert_eq!(computed.text.letter_spacing.fraction, 0.0);
     }
 }
