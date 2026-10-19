@@ -486,7 +486,8 @@ fn text_group<S: TextStyle>(style: &S, scale: f32, language: Option<Language>) -
             css::WordBreak::KeepAll => WordBreak::KeepAll,
         },
         line_break: match style.line_break() {
-            css::LineBreak::Auto | css::LineBreak::Normal => LineBreak::Normal,
+            css::LineBreak::Auto => LineBreak::Auto,
+            css::LineBreak::Normal => LineBreak::Normal,
             css::LineBreak::Loose => LineBreak::Loose,
             css::LineBreak::Strict => LineBreak::Strict,
             css::LineBreak::Anywhere => LineBreak::Anywhere,
