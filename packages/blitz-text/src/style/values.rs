@@ -997,20 +997,32 @@ pub enum Position {
     Sticky,
 }
 
-/// A computed `vertical-align`.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub enum VerticalAlign {
+/// A computed `alignment-baseline`, the keyword half of `vertical-align`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AlignmentBaseline {
     #[default]
     Baseline,
-    Sub,
-    Super,
     TextTop,
     TextBottom,
     Middle,
+}
+
+/// A computed `baseline-shift`, the shift half of `vertical-align`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BaselineShift {
+    Sub,
+    Super,
     Top,
     Bottom,
-    /// A shift of the baseline, whose percentages are of the line height.
+    Center,
+    /// A length, whose percentages are of the line height.
     Length(LengthPercentage),
+}
+
+impl Default for BaselineShift {
+    fn default() -> Self {
+        Self::Length(LengthPercentage::default())
+    }
 }
 
 /// A computed `overflow-x` or `overflow-y`.
