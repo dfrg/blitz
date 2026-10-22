@@ -260,24 +260,25 @@ pub(crate) fn contents_modifications(
     ]
 }
 
-/// `vertical-align`. `alignment-baseline` and `baseline-shift` apply in SVG only, as in Chrome,
-/// so HTML boxes never read them.
+/// `vertical-align`, which CSS Inline 3 splits into `alignment-baseline` and `baseline-shift`.
 ///
 /// Percentages are of the element's own `line-height`.
 pub(crate) fn vertical_align(style: &impl TextStyle) -> VerticalAlign {
-    let align = VerticalAlign::new;
-    let baseline = AlignmentBaseline::Baseline;
-    let none = BaselineShift::Length(0.0);
-    match style.vertical_align() {
-        css::VerticalAlign::Baseline => align(baseline, none),
-        css::VerticalAlign::Sub => align(baseline, BaselineShift::Sub),
-        css::VerticalAlign::Super => align(baseline, BaselineShift::Super),
-        css::VerticalAlign::Top => align(baseline, BaselineShift::Top),
-        css::VerticalAlign::Bottom => align(baseline, BaselineShift::Bottom),
-        css::VerticalAlign::TextTop => align(AlignmentBaseline::TextTop, none),
-        css::VerticalAlign::TextBottom => align(AlignmentBaseline::TextBottom, none),
-        css::VerticalAlign::Middle => align(AlignmentBaseline::Middle, none),
-        css::VerticalAlign::Length(length) => {
+    let alignment = match style.alignment_baseline() {
+        css::AlignmentBaseline::Baseline => AlignmentBaseline::Baseline,
+        css::AlignmentBaseline::TextTop => AlignmentBaseline::TextTop,
+        css::AlignmentBaseline::TextBottom => AlignmentBaseline::TextBottom,
+        css::AlignmentBaseline::Middle => AlignmentBaseline::Middle,
+    };
+    let shift = match style.baseline_shift() {
+        css::BaselineShift::Sub => BaselineShift::Sub,
+        css::BaselineShift::Super => BaselineShift::Super,
+        css::BaselineShift::Top => BaselineShift::Top,
+        css::BaselineShift::Bottom => BaselineShift::Bottom,
+        // `center` (the aligned subtree's centre on the line box's centre) is not representable
+        // in Parley yet: it is approximated with `middle`.
+        css::BaselineShift::Center => return VerticalAlign::MIDDLE,
+        css::BaselineShift::Length(length) => {
             let shift = if length.has_percentage() {
                 let font_size = style.font_size();
                 let line_height = match style.line_height() {
@@ -291,9 +292,10 @@ pub(crate) fn vertical_align(style: &impl TextStyle) -> VerticalAlign {
             } else {
                 length.resolve(0.0)
             };
-            align(baseline, BaselineShift::Length(shift))
+            BaselineShift::Length(shift)
         }
-    }
+    };
+    VerticalAlign::new(alignment, shift)
 }
 
 /// The Parley style of the element `key`, set in `style`.

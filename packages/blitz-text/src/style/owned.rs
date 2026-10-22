@@ -132,7 +132,8 @@ pub struct OwnedTextStyle {
     pub display: Display,
     pub float: Float,
     pub position: Position,
-    pub vertical_align: VerticalAlign,
+    pub alignment_baseline: AlignmentBaseline,
+    pub baseline_shift: BaselineShift,
     pub overflow_x: Overflow,
     // Margin, padding and border
     pub margin: Sides<LengthPercentageOrAuto>,
@@ -236,7 +237,8 @@ impl Default for OwnedTextStyle {
             },
             float: Float::None,
             position: Position::Static,
-            vertical_align: VerticalAlign::Baseline,
+            alignment_baseline: AlignmentBaseline::Baseline,
+            baseline_shift: BaselineShift::default(),
             overflow_x: Overflow::Visible,
             margin: Sides::all(LengthPercentageOrAuto::LengthPercentage(
                 LengthPercentage::Length(0.0),
@@ -513,8 +515,11 @@ impl TextStyle for OwnedTextStyle {
     fn position(&self) -> Position {
         self.position
     }
-    fn vertical_align(&self) -> VerticalAlign {
-        self.vertical_align.clone()
+    fn alignment_baseline(&self) -> AlignmentBaseline {
+        self.alignment_baseline
+    }
+    fn baseline_shift(&self) -> BaselineShift {
+        self.baseline_shift.clone()
     }
     fn overflow_x(&self) -> Overflow {
         self.overflow_x

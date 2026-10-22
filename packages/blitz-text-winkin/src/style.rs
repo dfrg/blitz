@@ -729,27 +729,29 @@ fn edges_group(style: &impl TextStyle, calcs: &CalcValues, scale: f32) -> EdgesG
     }
 }
 
-/// `vertical-align`. `alignment-baseline` and `baseline-shift` apply in SVG only, as in Chrome,
-/// so HTML boxes never read them.
+/// `vertical-align`, which CSS Inline 3 splits into `alignment-baseline` and `baseline-shift`.
 fn vertical_align(style: &impl TextStyle, scale: f32) -> VerticalAlign {
-    match style.vertical_align() {
-        css::VerticalAlign::Baseline => VerticalAlign::Baseline,
-        css::VerticalAlign::Sub => VerticalAlign::Sub,
-        css::VerticalAlign::Super => VerticalAlign::Super,
-        css::VerticalAlign::Top => VerticalAlign::Top,
-        css::VerticalAlign::TextTop => VerticalAlign::TextTop,
-        css::VerticalAlign::Middle => VerticalAlign::Middle,
-        css::VerticalAlign::Bottom => VerticalAlign::Bottom,
-        css::VerticalAlign::TextBottom => VerticalAlign::TextBottom,
-        css::VerticalAlign::Length(css::LengthPercentage::Length(length)) if length != 0.0 => {
-            VerticalAlign::Px(length * scale)
+    match style.baseline_shift() {
+        css::BaselineShift::Sub => return VerticalAlign::Sub,
+        css::BaselineShift::Super => return VerticalAlign::Super,
+        css::BaselineShift::Top => return VerticalAlign::Top,
+        css::BaselineShift::Bottom => return VerticalAlign::Bottom,
+        css::BaselineShift::Center => return VerticalAlign::Middle,
+        css::BaselineShift::Length(css::LengthPercentage::Length(length)) if length != 0.0 => {
+            return VerticalAlign::Px(length * scale);
         }
-        css::VerticalAlign::Length(css::LengthPercentage::Percentage(percentage))
+        css::BaselineShift::Length(css::LengthPercentage::Percentage(percentage))
             if percentage != 0.0 =>
         {
-            VerticalAlign::Fraction(percentage)
+            return VerticalAlign::Fraction(percentage);
         }
-        css::VerticalAlign::Length(_) => VerticalAlign::Baseline,
+        css::BaselineShift::Length(_) => {}
+    }
+    match style.alignment_baseline() {
+        css::AlignmentBaseline::TextTop => VerticalAlign::TextTop,
+        css::AlignmentBaseline::TextBottom => VerticalAlign::TextBottom,
+        css::AlignmentBaseline::Middle => VerticalAlign::Middle,
+        css::AlignmentBaseline::Baseline => VerticalAlign::Baseline,
     }
 }
 

@@ -272,8 +272,11 @@ pub trait TextStyle: Clone + Send + Sync {
     /// Returns `position`.
     fn position(&self) -> Position;
 
-    /// Returns `vertical-align`. `alignment-baseline` and `baseline-shift` apply in SVG only.
-    fn vertical_align(&self) -> VerticalAlign;
+    /// Returns `alignment-baseline`.
+    fn alignment_baseline(&self) -> AlignmentBaseline;
+
+    /// Returns `baseline-shift`.
+    fn baseline_shift(&self) -> BaselineShift;
 
     /// Returns `overflow-x`.
     fn overflow_x(&self) -> Overflow;
@@ -440,7 +443,8 @@ pub trait TextStyle: Clone + Send + Sync {
         self.display() == other.display()
             && self.float() == other.float()
             && self.position() == other.position()
-            && self.vertical_align() == other.vertical_align()
+            && self.alignment_baseline() == other.alignment_baseline()
+            && self.baseline_shift() == other.baseline_shift()
             && self.overflow_x() == other.overflow_x()
     }
 
