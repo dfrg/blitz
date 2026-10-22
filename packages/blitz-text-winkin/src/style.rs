@@ -619,18 +619,7 @@ fn line_group(style: &impl TextStyle, scale: f32) -> LineGroup {
             css::LineHeight::Length(length) => LineHeight::Px(length * scale),
         },
         vertical_align: vertical_align(style, scale),
-        dominant_baseline: match style.dominant_baseline() {
-            css::DominantBaseline::Alphabetic => DominantBaseline::Alphabetic,
-            css::DominantBaseline::Ideographic => DominantBaseline::Ideographic,
-            css::DominantBaseline::Central | css::DominantBaseline::Middle => {
-                DominantBaseline::Central
-            }
-            css::DominantBaseline::Mathematical => DominantBaseline::Mathematical,
-            css::DominantBaseline::Auto
-            | css::DominantBaseline::Hanging
-            | css::DominantBaseline::TextTop
-            | css::DominantBaseline::TextBottom => DominantBaseline::Auto,
-        },
+        dominant_baseline: dominant_baseline(style),
         // A sink left out, or `drop`, is the size, floored; `raise` is 1.
         initial_letter: if initial_letter.size > 0.0 {
             InitialLetter {
@@ -752,6 +741,25 @@ fn vertical_align(style: &impl TextStyle, scale: f32) -> VerticalAlign {
         css::AlignmentBaseline::TextBottom => VerticalAlign::TextBottom,
         css::AlignmentBaseline::Middle => VerticalAlign::Middle,
         css::AlignmentBaseline::Baseline => VerticalAlign::Baseline,
+    }
+}
+
+/// `dominant-baseline`, apart from the baselines `vertical-align` cannot name.
+///
+/// Servo builds of Stylo parse `alignment-baseline` as `baseline`,
+/// `text-bottom`, `middle` and `text-top` only, so the other baselines count
+/// as `auto` here too: a box aligns by no baseline its children could not.
+fn dominant_baseline(style: &impl TextStyle) -> DominantBaseline {
+    match style.dominant_baseline() {
+        css::DominantBaseline::TextBottom => DominantBaseline::TextBottom,
+        css::DominantBaseline::Middle => DominantBaseline::Middle,
+        css::DominantBaseline::TextTop => DominantBaseline::TextTop,
+        css::DominantBaseline::Auto
+        | css::DominantBaseline::Alphabetic
+        | css::DominantBaseline::Ideographic
+        | css::DominantBaseline::Central
+        | css::DominantBaseline::Mathematical
+        | css::DominantBaseline::Hanging => DominantBaseline::Auto,
     }
 }
 
